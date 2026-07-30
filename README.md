@@ -53,10 +53,9 @@ it can join your keychain.
   times (about 10) will permanently lock your keychain recovery. One correct entry is
   perfectly safe.
 - Your 2FA code and passcode are used immediately and **never saved**. Your password is kept
-  **encrypted on your computer** (in your login keyring) so `icp` can stay signed in without
-  asking you again - it never leaves your machine. Your access tokens and passwords are stored
-  the same way.
-
+**encrypted on your computer** (in your desktop login keyring — GNOME Keyring, KDE KWallet,
+  or a private file fallback) so `icp` can stay signed in without asking you again - it never
+  leaves your machine. Your access tokens and passwords are stored the same way.
 ## Browse your passwords
 
 ```
