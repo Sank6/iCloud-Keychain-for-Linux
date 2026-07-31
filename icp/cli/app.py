@@ -341,7 +341,7 @@ def cmd_show(args) -> int:
         return 1
 
     use_tui = (not args.plain and not args.query and not args.show_passwords
-               and sys.stdin.isatty() and sys.stdout.isatty())
+               and not args.show_totp and sys.stdin.isatty() and sys.stdout.isatty())
     if use_tui:
         try:
             return _run_tui(store)
@@ -375,7 +375,9 @@ def _show_plain(store, args) -> int:
         user_w = min(max(len(c.username) for c in creds), 40)
         for c in creds:
             pw = c.password if args.show_passwords else "******"
-            ui.out(f"{c.domain:<{dom_w}}  {c.username:<{user_w}}  {pw}")
+            otp = c.public_dict().get("totp", {}).get("code", "") if args.show_totp else ""
+            suffix = f"  TOTP {otp}" if otp else ""
+            ui.out(f"{c.domain:<{dom_w}}  {c.username:<{user_w}}  {pw}{suffix}")
         ui.step(f"{len(creds)} credential(s).")
 
     if aliases:
@@ -407,7 +409,7 @@ def _run_tui(store) -> int:
     dom_w = min(max((len(c.domain) for c in creds), default=6), 32)
     user_w = min(max((len(c.username) for c in creds), default=4), 32)
     summary = _printable(f"{_status_summary()}  |  {len(creds)} credential(s)")
-    footer = "type to search | up/down move | Enter reveal | Esc clear/quit"
+    footer = "type to search | up/down move | Enter reveal password + TOTP | Esc clear/quit"
 
     def draw(stdscr):
         curses.curs_set(0)
@@ -439,8 +441,11 @@ def _run_tui(store) -> int:
                 put(3, 0, "(no matching credentials)", curses.A_DIM)
             for idx, c in enumerate(shown[offset:offset + view_h]):
                 i = offset + idx
-                pw = c.password if id(c) in revealed else "******"
-                line = _printable(f"{c.domain:<{dom_w}}  {c.username:<{user_w}}  {pw}")
+                is_revealed = id(c) in revealed
+                pw = c.password if is_revealed else "******"
+                otp = c.public_dict().get("totp", {}).get("code", "") if is_revealed else ""
+                suffix = f"  TOTP {otp}" if otp else ""
+                line = _printable(f"{c.domain:<{dom_w}}  {c.username:<{user_w}}  {pw}{suffix}")
                 put(3 + idx, 0, line, curses.A_REVERSE if i == sel else curses.A_NORMAL)
             put(h - 1, 0, footer, curses.A_DIM)
             stdscr.refresh()
@@ -665,14 +670,39 @@ def _ensure_web_session(s: dict, *, interactive: bool):
 
 
 def cmd_logout(args) -> int:
+    # Logging out must also remove all locally cached credential material.  The
+    # pass-backed master key and device identity are intentionally retained so
+    # a later login can reuse the registered device without reinitialising pass.
     session.clear()
-    ui.out("Session cleared. Device identity kept (use --wipe-device to remove it).")
+
+    from .. import paths
+
+    removed = []
+    for cached_file in (
+        paths.vault_file(),
+        paths.aliases_file(),
+        paths.sync_lock_file(),
+        paths.sync_attempt_file(),
+    ):
+        try:
+            cached_file.unlink()
+            removed.append(cached_file.name)
+        except FileNotFoundError:
+            pass
+
+    ui.out("Session cleared and local password caches removed.")
+    if removed:
+        ui.out("Removed: " + ", ".join(removed))
+    ui.out("Device identity and pass master key kept (use --wipe-device to remove the device).")
+
     if args.wipe_device:
-        from ..paths import device_file
-        f = device_file()
-        if f.exists():
+        f = paths.device_file()
+        try:
             f.unlink()
-        ui.out("Device identity wiped.")
+        except FileNotFoundError:
+            pass
+        else:
+            ui.out("Device identity wiped.")
     return 0
 
 
@@ -701,6 +731,8 @@ def main(argv=None) -> int:
                          "(plain output)")
     sp.add_argument("-s", "--show-passwords", action="store_true",
                     help="reveal passwords in plain output")
+    sp.add_argument("--show-totp", action="store_true",
+                    help="show the current TOTP verification code in plain output")
     sp.add_argument("--plain", action="store_true",
                     help="print plain text instead of the interactive TUI")
     sp.set_defaults(func=cmd_show)

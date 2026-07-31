@@ -31,12 +31,24 @@ You will also need this repo. Clone it / download it as you wish.
 
 ## Install
 
-From the project folder:
+Install and initialise [`pass`](https://www.passwordstore.org/) first. It uses your existing GPG
+key and works independently of GNOME, KDE, or any other desktop environment:
+
+```
+# Distribution package name is usually "pass" or "password-store"
+pass init YOUR_GPG_KEY_ID
+```
+
+Then, from the project folder:
 
 ```
 python3 -m venv .venv && .venv/bin/pip install -e .
 source .venv/bin/activate
 ```
+
+The encryption master key is stored at `icloud-keychain-for-linux/master-key` in password-store.
+Set `ICP_PASS_ENTRY` to use another entry name. An existing `~/.config/icp/master.key` from an
+older installation is imported into `pass` automatically, preserving the encrypted vault.
 
 ## Sign in
 
@@ -52,10 +64,9 @@ it can join your keychain.
 - The passcode step is **important and can't be undone**: entering the wrong passcode too many
   times (about 10) will permanently lock your keychain recovery. One correct entry is
   perfectly safe.
-- Your 2FA code and passcode are used immediately and **never saved**. Your password is kept
-  **encrypted on your computer** (in your login keyring) so `icp` can stay signed in without
-  asking you again - it never leaves your machine. Your access tokens and passwords are stored
-  the same way.
+- Your sign-in 2FA code and passcode are used immediately and **never saved**. Your password is
+  kept **encrypted on your computer** so `icp` can stay signed in without asking you again. The
+  random encryption key is protected by `pass`/GPG; no GNOME keyring or Secret Service is needed.
 
 ## Browse your passwords
 
@@ -104,8 +115,9 @@ If you ever move this project to a different folder, just run `host/install.sh` 
 
 ## Filling in passwords
 
-- On a sign-in page, click the username or password box - an **iCloud Passwords** dropdown appears
-  with matching logins. Click one to fill it in (it handles email-first pages like Google too).
+- On a sign-in page, click the username, password, or verification-code box - an **iCloud
+  Passwords** dropdown appears with matching logins. Click one to fill the username, password,
+  and current TOTP code where those fields are present (including email-first pages like Google).
 - Start typing to narrow the list.
 - Or click the extension's toolbar icon and pick a login there.
 

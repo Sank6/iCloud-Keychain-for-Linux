@@ -11,10 +11,16 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import base64
+import hashlib
+import hmac
 import json
+import plistlib
 import re
 import struct
 import sys
+import time
+from urllib.parse import parse_qs, unquote, urlparse
 
 
 @dataclasses.dataclass(frozen=True)
@@ -26,10 +32,16 @@ class Credential:
     # Unix epoch seconds of the item's last change (keychain `mdat`, falling back to `cdat`);
     # 0 when unknown. Used to sort newest-first and to render a "last used N ago" line.
     mdat: float = 0.0
+    notes: str = ""
+    otp_uri: str = ""
 
     def public_dict(self) -> dict:
-        return {"domain": self.domain, "username": self.username,
-                "password": self.password, "title": self.title, "mdat": self.mdat}
+        result = {"domain": self.domain, "username": self.username,
+                  "password": self.password, "title": self.title, "mdat": self.mdat,
+                  "notes": self.notes}
+        if self.otp_uri:
+            result["totp"] = current_totp(self.otp_uri)
+        return result
 
 
 _APPLE_EPOCH = 978307200  # 2001-01-01 UTC in unix seconds (Apple "absolute time" origin)
@@ -117,6 +129,203 @@ def _name_matches_host(page: str, name: str) -> bool:
     return bool(labels & tokens)
 
 
+def _text_key(value: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", (value or "").casefold()))
+
+
+def _walk_plist(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield str(key), child
+            yield from _walk_plist(child)
+    elif isinstance(value, (list, tuple, set)):
+        for child in value:
+            yield "", child
+            yield from _walk_plist(child)
+
+
+def _merge_text(a: str, b: str) -> str:
+    parts = []
+    for value in (a, b):
+        value = (value or "").strip()
+        if value and value not in parts:
+            parts.append(value)
+    return "\n".join(parts)
+
+
+def _expand_keyed_archive(obj):
+    """Resolve a plistlib NSKeyedArchiver object graph into ordinary Python values."""
+    if not isinstance(obj, dict) or obj.get("$archiver") != "NSKeyedArchiver":
+        return obj
+    objects = obj.get("$objects")
+    if not isinstance(objects, list):
+        return obj
+
+    def resolve(node, seen=frozenset()):
+        if isinstance(node, plistlib.UID):
+            index = node.data
+            if index < 0 or index >= len(objects) or index in seen:
+                return None
+            return resolve(objects[index], seen | {index})
+        if node == "$null":
+            return None
+        if isinstance(node, list):
+            return [resolve(value, seen) for value in node]
+        if isinstance(node, dict):
+            out = {key: resolve(value, seen) for key, value in node.items()
+                   if not str(key).startswith("$")}
+            if "$class" in node:
+                for wrapper in ("NS.data", "NS.string", "NS.objects", "NS.keys"):
+                    if wrapper in out and len(out) == 1:
+                        return out[wrapper]
+                # NSDictionary archives store parallel NS.keys / NS.objects arrays.
+                keys, values = out.get("NS.keys"), out.get("NS.objects")
+                if isinstance(keys, list) and isinstance(values, list):
+                    return {str(k): v for k, v in zip(keys, values)}
+            return out
+        return node
+
+    top = obj.get("$top")
+    if isinstance(top, dict) and "root" in top:
+        return resolve(top["root"])
+    return resolve(top)
+
+
+def _decode_item_value(raw) -> tuple[str, str, str, dict[str, str]]:
+    """Return ``(password, notes, otp_uri)`` from a keychain value.
+
+    Binary plists are recursively inspected rather than decoded as replacement-character text.
+    This prevents visible ``bplist00...`` garbage and handles Apple's changing metadata keys.
+    """
+    if raw is None:
+        return "", "", "", {}
+    if isinstance(raw, str):
+        if raw.startswith("otpauth://"):
+            return "", "", raw, {}
+        return raw, "", "", {}
+    if not isinstance(raw, (bytes, bytearray)):
+        return str(raw), "", "", {}
+    data = bytes(raw)
+    if not data.startswith(b"bplist00"):
+        return data.decode("utf-8", "replace"), "", "", {}
+    try:
+        obj = _expand_keyed_archive(plistlib.loads(data))
+    except Exception:
+        return "", "", "", {}
+
+    otp_uri = ""
+    notes: list[str] = []
+    password = ""
+    password_score = -1
+    metadata: dict[str, str] = {}
+    note_keys = {"note", "notes", "comment", "comments", "txt", "text"}
+    # Avoid treating security-recommendation fields named merely "value" or "secret" as the
+    # login password. Explicit password fields win; generic fields are accepted only as a
+    # last-resort when their surrounding key is not warning/security metadata.
+    password_key_scores = {
+        "password": 100, "passwd": 100, "secretvalue": 90,
+        "credentialpassword": 100, "cleartextpassword": 100,
+        "secret": 20, "value": 10,
+    }
+    warning_tokens = {"compromised", "weak", "reused", "breach", "warning",
+                      "recommendation", "security", "risk", "score", "status"}
+    domain_keys = {"srvr", "server", "domain", "url", "website", "site", "relyingparty"}
+    username_keys = {"acct", "account", "username", "user", "login", "email"}
+    title_keys = {"labl", "label", "title", "name", "displayname"}
+    group_keys = {"group", "groupname", "sharedgroup", "sharedgroupname", "collection"}
+    for key, value in _walk_plist(obj):
+        key_l = key.casefold()
+        if isinstance(value, bytes):
+            try:
+                value = value.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+        if not isinstance(value, str):
+            continue
+        text = value.strip()
+        if not text:
+            continue
+        match = re.search(r"otpauth://totp/[^\s\x00]+", text, re.IGNORECASE)
+        if match and not otp_uri:
+            otp_uri = match.group(0)
+        elif key_l in note_keys and not text.startswith("otpauth://"):
+            notes.append(text)
+        elif key_l in password_key_scores and not text.startswith("otpauth://"):
+            key_is_warning = any(token in key_l for token in warning_tokens)
+            looks_like_warning_value = text.casefold() in {
+                "true", "false", "yes", "no", "weak", "compromised", "reused",
+                "high", "medium", "low", "warning", "dismissed",
+            }
+            score = password_key_scores[key_l]
+            if not key_is_warning and not looks_like_warning_value and score > password_score:
+                password, password_score = text, score
+        elif key_l in domain_keys and "domain" not in metadata:
+            metadata["domain"] = text
+        elif key_l in username_keys and "username" not in metadata:
+            metadata["username"] = text
+        elif key_l in title_keys and "title" not in metadata:
+            metadata["title"] = text
+        elif key_l in group_keys and "shared_group" not in metadata:
+            metadata["shared_group"] = text
+    if otp_uri:
+        try:
+            otp_label = unquote(urlparse(otp_uri).path.lstrip("/"))
+            if ":" in otp_label and "username" not in metadata:
+                issuer, account = otp_label.split(":", 1)
+                if account.strip():
+                    metadata["username"] = account.strip()
+                if issuer.strip() and "title" not in metadata:
+                    metadata["title"] = issuer.strip()
+        except Exception:
+            pass
+    return password, "\n".join(dict.fromkeys(notes)), otp_uri, metadata
+
+
+def _merge_credentials(a: Credential, b: Credential) -> Credential:
+    newest, older = (b, a) if b.mdat > a.mdat else (a, b)
+    return Credential(
+        domain=newest.domain or older.domain,
+        username=newest.username or older.username,
+        password=newest.password or older.password,
+        title=newest.title or older.title,
+        mdat=max(a.mdat, b.mdat),
+        notes=_merge_text(a.notes, b.notes),
+        otp_uri=newest.otp_uri or older.otp_uri,
+    )
+
+
+def current_totp(uri: str, now: float | None = None) -> dict:
+    """Generate the current RFC 6238 code represented by an ``otpauth://totp`` URI."""
+    try:
+        parsed = urlparse(uri)
+        if parsed.scheme.casefold() != "otpauth" or parsed.netloc.casefold() != "totp":
+            return {}
+        query = parse_qs(parsed.query)
+        secret = query.get("secret", [""])[0].replace(" ", "").upper()
+        if not secret:
+            return {}
+        padding = "=" * ((8 - len(secret) % 8) % 8)
+        key = base64.b32decode(secret + padding, casefold=True)
+        digits = int(query.get("digits", ["6"])[0])
+        period = int(query.get("period", ["30"])[0])
+        algorithm = query.get("algorithm", ["SHA1"])[0].replace("-", "").lower()
+        digest = {"sha1": hashlib.sha1, "sha256": hashlib.sha256,
+                  "sha512": hashlib.sha512}.get(algorithm)
+        if digest is None or digits < 6 or digits > 10 or period <= 0:
+            return {}
+        timestamp = time.time() if now is None else now
+        counter = int(timestamp // period)
+        mac = hmac.new(key, counter.to_bytes(8, "big"), digest).digest()
+        offset = mac[-1] & 0x0F
+        binary = int.from_bytes(mac[offset:offset + 4], "big") & 0x7FFFFFFF
+        code = str(binary % (10 ** digits)).zfill(digits)
+        return {"code": code, "period": period, "digits": digits,
+                "expires_at": (counter + 1) * period,
+                "label": unquote(parsed.path.lstrip("/"))}
+    except Exception:
+        return {}
+
+
 class CredentialStore:
     """In-memory read-only store. The pipeline builds this from decrypted keychain items."""
 
@@ -148,27 +357,101 @@ class CredentialStore:
 
     @classmethod
     def from_items(cls, items) -> "CredentialStore":
-        """Build from decrypted keychain item dicts (plist form). Apple `inet` password items use
-        `srvr` (server/domain), `acct` (username), `v_Data` (plaintext password), `labl` (title);
-        tolerate the common variants."""
-        creds = []
+        """Build credentials and merge Apple's auxiliary plist records.
+
+        Passwords may sync a normal ``inet`` item plus separate binary-plist values containing
+        notes or an ``otpauth://`` URI.  Those records are metadata for the same login, not extra
+        browser rows.  Group by normalized site/title and account, then retain the newest password
+        while combining notes and OTP metadata.
+        """
+        merged: dict[tuple[str, str, str], Credential] = {}
         for it in items:
-            domain = (it.get("srvr") or it.get("server") or it.get("domain")
-                      or it.get("url") or it.get("svce") or "")
-            username = it.get("acct") or it.get("username") or it.get("user") or ""
-            pw = it.get("v_Data") or it.get("password") or b""
-            if isinstance(pw, (bytes, bytearray)):
-                pw = pw.decode("utf-8", "replace")
+            domain = str(it.get("srvr") or it.get("server") or it.get("domain")
+                         or it.get("url") or it.get("svce") or "")
+            username = str(it.get("acct") or it.get("username") or it.get("user") or "")
             title = str(it.get("labl") or domain)
-            if not _is_credential(str(domain), title):
-                continue
-            # Need a host/label to match against and at least a username or password to fill.
-            if (not domain and not username) or not (username or pw):
+
+            raw = it.get("v_Data") if "v_Data" in it else it.get("password", b"")
+            password, notes, otp_uri, metadata = _decode_item_value(raw)
+            # Shared Password Groups and newer Website Metadata records often keep the useful
+            # website/account/title inside v_Data rather than the outer keychain attributes.
+            outer_domain, outer_title = domain, title
+            domain = metadata.get("domain", "") or domain
+            username = metadata.get("username", "") or username
+            # Prefer a useful inner title over an Apple wrapper label.
+            inner_title = metadata.get("title", "")
+            if inner_title and (not title or not _is_credential(outer_domain, outer_title)):
+                title = inner_title
+            title = title or domain
+            explicit_notes = it.get("notes") or it.get("note") or it.get("comment") or ""
+            if explicit_notes:
+                notes = _merge_text(notes, str(explicit_notes))
+
+            # Filter only after decoding the inner plist. Apple wrapper records frequently have
+            # labels such as "Website Metadata" or com.apple.* while containing a valid shared
+            # login inside v_Data. Keep the record when the decoded payload supplies login data.
+            has_inner_login = bool(metadata.get("domain") or metadata.get("username")
+                                   or password or otp_uri)
+            if not has_inner_login and not _is_credential(domain, title):
                 continue
             mdat = _to_unix(it.get("mdat") or it.get("cdat"))
-            creds.append(Credential(domain=str(domain), username=str(username),
-                                    password=str(pw), title=title, mdat=mdat))
-        return cls(creds)
+
+            # Auxiliary records sometimes omit srvr but retain the same label/account.  A
+            # normalized title fallback lets them merge with the corresponding login.
+            site_key = _normalize_host(domain) or _text_key(title)
+            key = (site_key, username.casefold(), _text_key(title))
+            incoming = Credential(domain=domain, username=username, password=password,
+                                  title=title, mdat=mdat, notes=notes, otp_uri=otp_uri)
+            prior = merged.get(key)
+            if prior is None:
+                merged[key] = incoming
+            else:
+                merged[key] = _merge_credentials(prior, incoming)
+
+        # Collapse Apple's multiple physical records into one logical Passwords row.  Exact
+        # equality is not enough: shared entries and Website Metadata commonly vary between a
+        # parent host and login subdomain, omit the account on the auxiliary record, or use the
+        # display title in place of a host.
+        collapsed: list[Credential] = []
+
+        def same_login(a: Credential, b: Credential) -> bool:
+            au, bu = a.username.casefold().strip(), b.username.casefold().strip()
+            ad, bd = _normalize_host(a.domain), _normalize_host(b.domain)
+            at, bt = _text_key(a.title), _text_key(b.title)
+
+            sites_match = bool(ad and bd and domains_match(ad, bd))
+            exact_user = bool(au and bu and au == bu)
+            exact_title = bool(at and bt and at == bt)
+            same_secret = bool(a.password and b.password and a.password == b.password)
+            auxiliary = lambda c: not c.password and bool(c.otp_uri or c.notes)
+
+            # Two complete password rows are distinct unless account+site match or their secret
+            # itself is identical. This prevents a username-less wrapper from swallowing several
+            # accounts for the same service.
+            if a.password and b.password:
+                return exact_user and (sites_match or exact_title or (same_secret and (not ad or not bd)))
+
+            # Metadata-only rows may attach to a password row, but require a strong shared
+            # identity. A missing username alone is no longer enough to merge by title.
+            if auxiliary(a) or auxiliary(b):
+                if exact_user and (sites_match or exact_title):
+                    return True
+                if same_secret:
+                    return True
+                return sites_match and exact_title and (au == bu)
+
+            return exact_user and (sites_match or exact_title)
+
+        for cred in sorted(merged.values(), key=lambda c: c.mdat, reverse=True):
+            for index, prior in enumerate(collapsed):
+                if same_login(prior, cred):
+                    collapsed[index] = _merge_credentials(prior, cred)
+                    break
+            else:
+                collapsed.append(cred)
+
+        return cls(c for c in collapsed
+                   if (c.domain or c.username or c.title) and (c.username or c.password or c.otp_uri))
 
 
 # native-messaging framing

@@ -19,6 +19,36 @@ function send(msg) {
     chrome.runtime.sendMessage(msg, (r) => resolve(r || { ok: false, error: "no response" })));
 }
 
+
+async function copyValue(value, button) {
+  if (!value) return;
+  try {
+    await navigator.clipboard.writeText(value);
+    const old = button.textContent;
+    button.textContent = "✓";
+    button.classList.add("copied");
+    setTimeout(() => { button.textContent = old; button.classList.remove("copied"); }, 700);
+  } catch (_) {
+    button.title = "Copy failed";
+  }
+}
+
+function copyButton(label, glyph, value) {
+  if (!value) return null;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "copy-btn";
+  button.textContent = glyph;
+  button.title = `Copy ${label}`;
+  button.setAttribute("aria-label", `Copy ${label}`);
+  button.addEventListener("click", async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    await copyValue(value, button);
+  });
+  return button;
+}
+
 function fillOnPage(cred) {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     if (!tabs[0]) return;
@@ -58,8 +88,16 @@ function fillOnPage(cred) {
             ? active
             : (cands.find(looksLikeUsername) || (cands.length === 1 ? cands[0] : null));
         }
+        const otpCandidates = Array.from(document.querySelectorAll(
+          'input[autocomplete="one-time-code"], input[type="text"], input[type="tel"], input[type="number"], input:not([type])'))
+          .filter(eligible);
+        const otp = otpCandidates.find((el) => {
+          const hay = `${el.name || ""} ${el.id || ""} ${el.autocomplete || ""} ${el.placeholder || ""} ${el.getAttribute("aria-label") || ""}`.toLowerCase();
+          return el.autocomplete === "one-time-code" || /otp|totp|2fa|mfa|one.?time|verification.?code|auth.?code/.test(hay);
+        }) || null;
         set(user, c.username);
         set(pw, c.password);
+        if (c.totp && c.totp.code) set(otp, c.totp.code);
       },
       args: [cred],
     });
@@ -95,10 +133,21 @@ async function main() {
     div.innerHTML =
       `<div class="avatar"></div>` +
       `<div class="meta"><div class="u"></div><div class="d"></div></div>` +
-      `<div class="fill">Fill -></div>`;
+      `<div class="actions"></div>` +
+      `<div class="fill">Fill →</div>`;
     div.querySelector(".avatar").textContent = avatarText(c);
     div.querySelector(".u").textContent = c.username || "(no username)";
-    div.querySelector(".d").textContent = c.title || c.domain;
+    div.querySelector(".d").textContent = c.totp && c.totp.code
+      ? `${c.title || c.domain} · ${c.totp.code}`
+      : (c.title || c.domain);
+    div.title = "Click the row to fill";
+    const actions = div.querySelector(".actions");
+    [
+      copyButton("username", "U", c.username),
+      copyButton("password", "P", c.password),
+      copyButton("verification code", "#", c.totp && c.totp.code),
+      copyButton("notes", "N", c.notes),
+    ].filter(Boolean).forEach((button) => actions.appendChild(button));
     div.addEventListener("click", () => { fillOnPage(c); window.close(); });
     listEl.appendChild(div);
   }

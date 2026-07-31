@@ -50,8 +50,15 @@
     .cred .meta { min-width: 0; flex: 1; }
     .cred .u { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .cred .d { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .cred .fill { flex: none; font-size: 11px; color: var(--accent); opacity: 0; }
-    .cred:hover .fill { opacity: 1; }
+    .cred .actions { display: flex; align-items: center; gap: 3px; flex: none; }
+    .copy-btn {
+      width: 23px; height: 23px; padding: 0; border: 1px solid var(--line);
+      border-radius: 5px; background: #fff; color: var(--muted); cursor: pointer;
+      font: 600 10px -apple-system, system-ui, sans-serif; line-height: 21px;
+    }
+    .copy-btn:hover, .copy-btn:focus-visible { color: var(--accent); border-color: #b8d8f7; background: #f2f8ff; }
+    .copy-btn.copied { color: #16823b; border-color: #b7dfc3; background: #f1fbf4; }
+    .cred .fill { display: none; }
   </style>
 </head>
 <body>

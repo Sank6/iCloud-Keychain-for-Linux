@@ -212,5 +212,137 @@ class DispatchTests(unittest.TestCase):
         return b
 
 
+    def test_apple_wrapper_with_inner_shared_login_is_kept(self):
+        import plistlib
+        wrapped = plistlib.dumps({
+            "website": "shared.example.com",
+            "username": "shared-user",
+            "password": "shared-secret",
+            "title": "Shared Example",
+        }, fmt=plistlib.FMT_BINARY)
+        store = CredentialStore.from_items([
+            {"srvr": "com.apple.password-manager", "labl": "Website Metadata",
+             "v_Data": wrapped},
+        ])
+        self.assertEqual(len(store), 1)
+        cred = store.all()[0]
+        self.assertEqual(cred.domain, "shared.example.com")
+        self.assertEqual(cred.username, "shared-user")
+        self.assertEqual(cred.password, "shared-secret")
+
+    def test_same_password_on_different_sites_is_not_deduplicated(self):
+        store = CredentialStore.from_items([
+            {"srvr": "one.example", "acct": "alice", "v_Data": b"reused"},
+            {"srvr": "two.example", "acct": "alice", "v_Data": b"reused"},
+        ])
+        self.assertEqual(len(store), 2)
+
 if __name__ == "__main__":
     unittest.main()
+
+class AppleMetadataTests(unittest.TestCase):
+    def test_binary_plist_totp_is_merged_not_shown_as_password(self):
+        import plistlib
+        otp = "otpauth://totp/Example:alice?secret=JBSWY3DPEHPK3PXP&issuer=Example"
+        metadata = plistlib.dumps({"txt": "personal note", "otp": otp},
+                                  fmt=plistlib.FMT_BINARY)
+        store = CredentialStore.from_items([
+            {"srvr": "example.com", "acct": "alice", "v_Data": b"hunter2",
+             "labl": "Example", "mdat": 100},
+            {"srvr": "example.com", "acct": "alice", "v_Data": metadata,
+             "labl": "Example", "mdat": 200},
+        ])
+        self.assertEqual(len(store), 1)
+        cred = store.all()[0]
+        self.assertEqual(cred.password, "hunter2")
+        self.assertEqual(cred.notes, "personal note")
+        self.assertEqual(cred.otp_uri, otp)
+        self.assertNotIn("bplist", cred.password)
+
+    def test_rfc6238_sha1_vector(self):
+        # RFC 6238 Appendix B: ASCII secret "12345678901234567890", T=59 -> 94287082.
+        uri = "otpauth://totp/Test?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&digits=8"
+        self.assertEqual(host.current_totp(uri, now=59)["code"], "94287082")
+
+    def test_public_dict_contains_code_not_secret_uri(self):
+        uri = "otpauth://totp/Test?secret=JBSWY3DPEHPK3PXP"
+        public = Credential("example.com", "alice", "pw", otp_uri=uri).public_dict()
+        self.assertIn("code", public["totp"])
+        self.assertNotIn("otp_uri", public)
+        self.assertNotIn("secret", str(public).lower())
+
+
+class SharedAndDedupTests(unittest.TestCase):
+    def test_shared_password_fields_inside_binary_plist(self):
+        import plistlib
+        shared = plistlib.dumps({
+            "website": "https://shared.example.com/login",
+            "username": "shared-user",
+            "secretValue": "shared-password",
+            "title": "Shared Example",
+            "sharedGroupName": "Family",
+        }, fmt=plistlib.FMT_BINARY)
+        store = CredentialStore.from_items([{
+            "class": "genp", "labl": "Shared Example", "v_Data": shared,
+        }])
+        self.assertEqual(len(store), 1)
+        cred = store.all()[0]
+        self.assertEqual(cred.domain, "https://shared.example.com/login")
+        self.assertEqual(cred.username, "shared-user")
+        self.assertEqual(cred.password, "shared-password")
+
+    def test_parent_and_login_subdomain_duplicates_collapse(self):
+        store = CredentialStore.from_items([
+            {"srvr": "example.com", "acct": "alice", "v_Data": b"pw", "labl": "Example"},
+            {"srvr": "login.example.com", "acct": "alice", "v_Data": b"pw", "labl": "Example Login"},
+        ])
+        self.assertEqual(len(store), 1)
+
+    def test_auxiliary_record_without_username_merges(self):
+        import plistlib
+        otp = plistlib.dumps({
+            "url": "https://example.com",
+            "token": "otpauth://totp/Example:alice?secret=JBSWY3DPEHPK3PXP",
+        }, fmt=plistlib.FMT_BINARY)
+        store = CredentialStore.from_items([
+            {"srvr": "example.com", "acct": "alice", "v_Data": b"pw", "labl": "Example"},
+            {"labl": "Example", "v_Data": otp},
+        ])
+        self.assertEqual(len(store), 1)
+        self.assertTrue(store.all()[0].otp_uri.startswith("otpauth://totp/"))
+
+class PasswordSecurityMetadataTests(unittest.TestCase):
+    def test_warning_value_does_not_replace_real_password(self):
+        import plistlib
+        wrapped = plistlib.dumps({
+            "password": "actual-password",
+            "securityRecommendation": {"value": "weak", "compromised": True},
+        }, fmt=plistlib.FMT_BINARY)
+        store = CredentialStore.from_items([
+            {"srvr": "example.com", "acct": "alice", "v_Data": wrapped,
+             "labl": "Example"},
+        ])
+        self.assertEqual(store.all()[0].password, "actual-password")
+
+    def test_nskeyedarchive_password_with_warning_is_decoded(self):
+        import plistlib
+        objects = [
+            "$null",
+            {"NS.keys": plistlib.UID(2), "NS.objects": plistlib.UID(3),
+             "$class": plistlib.UID(6)},
+            {"NS.objects": [plistlib.UID(4), plistlib.UID(5)], "$class": plistlib.UID(7)},
+            {"NS.objects": [plistlib.UID(8), plistlib.UID(9)], "$class": plistlib.UID(7)},
+            "password", "securityRecommendation",
+            {"$classname": "NSDictionary", "$classes": ["NSDictionary", "NSObject"]},
+            {"$classname": "NSArray", "$classes": ["NSArray", "NSObject"]},
+            "archived-password", {"value": "compromised"},
+        ]
+        archived = plistlib.dumps({
+            "$version": 100000, "$archiver": "NSKeyedArchiver",
+            "$top": {"root": plistlib.UID(1)}, "$objects": objects,
+        }, fmt=plistlib.FMT_BINARY)
+        store = CredentialStore.from_items([
+            {"srvr": "example.org", "acct": "bob", "v_Data": archived,
+             "labl": "Example"},
+        ])
+        self.assertEqual(store.all()[0].password, "archived-password")

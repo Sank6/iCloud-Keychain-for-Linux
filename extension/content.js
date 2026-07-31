@@ -2,6 +2,7 @@
   "use strict";
 
   const PASSWORD_SEL = 'input[type="password"]';
+  const OTP_SEL = 'input[autocomplete="one-time-code"], input[inputmode="numeric"], input[type="number"], input[type="tel"], input[type="text"], input:not([type])';
   // Username-ish inputs. Excludes password (handled separately) and obvious non-login types.
   const USERNAME_SEL =
     'input[type="text"], input[type="email"], input[type="tel"], input[type="username"], input:not([type])';
@@ -65,13 +66,31 @@
   }
 
   function fill(cred, anchor) {
+    // Preserve the original extension's known-working username/password fill path exactly.
     const pw = deepQuery(PASSWORD_SEL);
     let userField = null;
-    if (anchor && anchor.type !== "password") userField = anchor;
+    if (anchor && anchor.type !== "password" && !looksLikeOtp(anchor)) userField = anchor;
     else if (pw) userField = findUsernameField(pw);
-    // Mark these as programmatically filled so the 'input' they emit doesn't re-open the menu.
-    if (userField && cred.username) { userField.__applepwFilled = true; setValue(userField, cred.username); }
-    if (pw && cred.password) { pw.__applepwFilled = true; setValue(pw, cred.password); }
+
+    if (userField && cred.username) {
+      userField.__applepwFilled = true;
+      setValue(userField, cred.username);
+    }
+    if (pw && cred.password) {
+      pw.__applepwFilled = true;
+      setValue(pw, cred.password);
+    }
+
+    // OTP is additive: fill the selected OTP field, or the first recognised OTP field.
+    if (cred.totp && cred.totp.code) {
+      const otp = anchor && looksLikeOtp(anchor)
+        ? anchor
+        : deepQueryAll(OTP_SEL).find((el) => visible(el) && looksLikeOtp(el));
+      if (otp) {
+        otp.__applepwFilled = true;
+        setValue(otp, cred.totp.code);
+      }
+    }
   }
 
   // Hide My Email aliases carry no password - always fill the username/email field, never
@@ -162,6 +181,7 @@
         name.textContent = cred.username || website || "(no title)";
       }
       row.appendChild(name);
+      if (cred.totp && cred.totp.code) row.appendChild(subLine(`Verification code: ${cred.totp.code}`));
       const rel = relTime(cred.mdat);
       if (rel) row.appendChild(subLine(`Last used ${rel}`));
       menu.appendChild(row);
@@ -239,6 +259,7 @@
   function scan() {
     const pwFields = deepQueryAll(PASSWORD_SEL).filter(visible);
     pwFields.forEach(attach);
+    deepQueryAll(OTP_SEL).filter((el) => visible(el) && looksLikeOtp(el)).forEach(attach);
     const hasPassword = pwFields.length > 0;
     deepQueryAll(USERNAME_SEL).forEach((el) => {
       if (!visible(el) || el.type === "password") return;

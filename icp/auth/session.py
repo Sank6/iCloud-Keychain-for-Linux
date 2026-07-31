@@ -1,51 +1,103 @@
-"""Encrypted session store: persistent auth artifacts encrypted with a libsodium secret box,
-the master key held in the GNOME login keyring (Secret Service), or a 0600 key file if absent."""
+"""Encrypted session store backed by a libsodium secret box.
 
+The random SecretBox master key is stored in ``pass`` (password-store), so the
+application is not coupled to GNOME Secret Service or any desktop environment.
+"""
+
+from __future__ import annotations
+
+import base64
 import json
-import logging
+import os
+import shutil
+import subprocess
 
 import nacl.secret
 import nacl.utils
 
 from .. import paths
 
-logger = logging.getLogger(__name__)
-
-_ATTRS = {"application": "icp", "type": "master-key"}
-_LABEL = "ApplePasswords-Linux master key"
+_PASS_ENTRY_DEFAULT = "icloud-keychain-for-linux/master-key"
 
 
-def _key_from_secret_service() -> bytes | None:
+class PassStoreError(RuntimeError):
+    """Raised when the password-store backend cannot read or write the master key."""
+
+
+def _pass_command() -> str:
+    command = os.environ.get("ICP_PASS_COMMAND", "pass")
+    resolved = shutil.which(command)
+    if resolved is None:
+        raise PassStoreError(
+            f"{command!r} was not found. Install password-store and run 'pass init <gpg-id>'."
+        )
+    return resolved
+
+
+def _pass_entry() -> str:
+    return os.environ.get("ICP_PASS_ENTRY", _PASS_ENTRY_DEFAULT)
+
+
+def _run_pass(args: list[str], *, input_text: str | None = None) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    # Never let pass invoke an interactive editor from the native-messaging host.
+    env.setdefault("PASSWORD_STORE_ENABLE_EXTENSIONS", "false")
     try:
-        import secretstorage
-    except Exception:
-        return None
+        return subprocess.run(
+            [_pass_command(), *args],
+            input=input_text,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=False,
+        )
+    except OSError as exc:
+        raise PassStoreError(f"could not execute pass: {exc}") from exc
+
+
+def _decode_key(value: str) -> bytes:
+    first_line = value.splitlines()[0].strip() if value else ""
     try:
-        conn = secretstorage.dbus_init()
-        coll = secretstorage.get_default_collection(conn)
-        if coll.is_locked():
-            coll.unlock()
-        for item in coll.search_items(_ATTRS):
-            return item.get_secret()
-        key = nacl.utils.random(nacl.secret.SecretBox.KEY_SIZE)
-        coll.create_item(_LABEL, _ATTRS, key, replace=True)
-        return key
-    except Exception as e:  # dbus not running, no keyring, etc.
-        logger.warning("Secret Service unavailable (%s); using key file fallback", e)
-        return None
+        key = base64.b64decode(first_line, validate=True)
+    except Exception as exc:
+        raise PassStoreError(f"pass entry {_pass_entry()!r} does not contain a valid base64 key") from exc
+    if len(key) != nacl.secret.SecretBox.KEY_SIZE:
+        raise PassStoreError(
+            f"pass entry {_pass_entry()!r} contains {len(key)} key bytes; "
+            f"expected {nacl.secret.SecretBox.KEY_SIZE}"
+        )
+    return key
+
+
+def _store_key(key: bytes) -> None:
+    encoded = base64.b64encode(key).decode("ascii") + "\n"
+    result = _run_pass(["insert", "--multiline", _pass_entry()], input_text=encoded)
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit status {result.returncode}"
+        raise PassStoreError(
+            f"could not store the iCloud Keychain master key in pass entry {_pass_entry()!r}: "
+            f"{detail}. Ensure 'pass init <gpg-id>' has been run."
+        )
 
 
 def _master_key() -> bytes:
-    key = _key_from_secret_service()
-    if key is not None:
+    result = _run_pass(["show", _pass_entry()])
+    if result.returncode == 0:
+        return _decode_key(result.stdout)
+
+    # Preserve installations that previously used the key-file fallback: import that exact key
+    # into pass once so existing encrypted session/vault files remain readable.
+    legacy = paths.fallback_key_file()
+    if legacy.exists():
+        key = legacy.read_bytes()
+        if len(key) != nacl.secret.SecretBox.KEY_SIZE:
+            raise PassStoreError(f"legacy master key {legacy} has an invalid length")
+        _store_key(key)
         return key
-    f = paths.fallback_key_file()
-    if f.exists():
-        return f.read_bytes()
+
     key = nacl.utils.random(nacl.secret.SecretBox.KEY_SIZE)
-    f.write_bytes(key)
-    f.chmod(0o600)
-    logger.warning("Stored master key at %s (0600) - less safe than the keyring", f)
+    _store_key(key)
     return key
 
 

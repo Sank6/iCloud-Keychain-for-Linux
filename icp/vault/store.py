@@ -13,7 +13,9 @@ from ..auth.session import _master_key
 
 
 def save_vault(store: CredentialStore) -> None:
-    creds = [c.public_dict() for c in store.all()]
+    creds = [{"domain": c.domain, "username": c.username, "password": c.password,
+              "title": c.title, "mdat": c.mdat, "notes": c.notes, "otp_uri": c.otp_uri}
+             for c in store.all()]
     box = nacl.secret.SecretBox(_master_key())
     blob = box.encrypt(json.dumps({"credentials": creds}).encode())
     f = paths.vault_file()
@@ -29,6 +31,7 @@ def load_vault() -> CredentialStore:
     data = json.loads(box.decrypt(f.read_bytes()).decode())
     creds = [Credential(domain=c.get("domain", ""), username=c.get("username", ""),
                         password=c.get("password", ""), title=c.get("title", ""),
-                        mdat=c.get("mdat", 0.0))
+                        mdat=c.get("mdat", 0.0), notes=c.get("notes", ""),
+                        otp_uri=c.get("otp_uri", ""))
              for c in data.get("credentials", [])]
     return CredentialStore(creds)
