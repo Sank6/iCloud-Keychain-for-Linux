@@ -58,6 +58,7 @@ class GSAClient:
     def _request(self, parameters: dict) -> dict:
         body = {"Header": {"Version": "1.0.1"}, "Request": {"cpd": self._cpd()}}
         body["Request"].update(parameters)
+        operation = parameters.get("o", "request")
         headers = {
             "Content-Type": "text/x-xml-plist",
             "Accept": "*/*",
@@ -68,7 +69,15 @@ class GSAClient:
             const.GSA_ENDPOINT, headers=headers, data=plist.dumps(body),
             verify=False, timeout=10,
         )
-        return plist.loads(resp.content)["Response"]
+
+        payload = plist.loads(resp.content)
+        response = payload.get("Response")
+
+        if not isinstance(response, dict) or not resp.ok:
+            raise GSAError(
+                f"GSA {operation} failed: HTTP {resp.status_code}: {_status(response)}"
+            )
+        return response
 
     def authenticate(self, username: str, password: str, stage: str) -> tuple[dict, dict]:
         usr = srp.User(username, bytes(), hash_alg=srp.SHA256, ng_type=srp.NG_2048)
