@@ -8,10 +8,14 @@ from the anisette server, not from here.
 # Sent as the GsService2 User-Agent.
 GSA_USER_AGENT = "akd/1.0 CFNetwork/978.0.7 Darwin/18.7.0"
 
-# Identifies us as a specific Mac model + OS + AuthKit/Xcode build.
+# AuthKit device description used by GrandSlam and its 2FA endpoints.  Apple
+# rejects GsService2 at the edge when this header names com.apple.dt.Xcode,
+# returning HTML with HTTP 503 before the plist request is processed.  The
+# 2FA endpoints still carry their Xcode application context in separate
+# User-Agent, X-Apple-App-Info, and X-Xcode-Version headers.
 GSA_CLIENT_INFO = (
     "<MacBookPro13,2> <Mac OS X;10.15.2;19C57> "
-    "<com.apple.AuthKit/1 (com.apple.dt.Xcode/3594.4.19)>"
+    "<com.apple.AuthKit/1 (com.apple.akd/1.0)>"
 )
 
 # Default anisette server (SideStore ecosystem). Override with ICP_ANISETTE_URL.
