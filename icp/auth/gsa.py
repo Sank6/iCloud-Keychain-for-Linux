@@ -65,27 +65,15 @@ class GSAClient:
             "User-Agent": const.GSA_USER_AGENT,
             "X-MMe-Client-Info": const.GSA_CLIENT_INFO,
         }
-        try:
-            resp = requests.post(
-                const.GSA_ENDPOINT, headers=headers, data=plist.dumps(body),
-                verify=False, timeout=10,
-            )
-        except requests.RequestException as e:
-            raise GSAError(f"GSA {operation} request failed: {e}") from e
+        resp = requests.post(
+            const.GSA_ENDPOINT, headers=headers, data=plist.dumps(body),
+            verify=False, timeout=10,
+        )
 
-        try:
-            payload = plist.loads(resp.content)
-        except plist.InvalidFileException as e:
-            content_type = resp.headers.get("Content-Type", "unknown")
-            raise GSAError(
-                f"GSA {operation} returned HTTP {resp.status_code}; expected a plist, "
-                f"received {content_type} ({len(resp.content)} bytes)"
-            ) from e
+        payload = plist.loads(resp.content)
+        response = payload.get("Response")
 
-        response = payload.get("Response") if isinstance(payload, dict) else None
-        if not isinstance(response, dict):
-            raise GSAError(f"GSA {operation} returned a plist without a Response dictionary")
-        if not resp.ok:
+        if not isinstance(response, dict) or not resp.ok:
             raise GSAError(
                 f"GSA {operation} failed: HTTP {resp.status_code}: {_status(response)}"
             )
