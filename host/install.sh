@@ -38,7 +38,7 @@ install_if_present() {  # $1 = manifest JSON, $2 = target NativeMessagingHosts d
   write_manifest "$1" "$dir"
 }
 
-# --- Chromium-family (Chrome, Chromium, Helium, Brave) ---
+# --- Chromium-family (Chrome, Chromium, Helium, Brave, Edge) ---
 if [ -n "$EXT_ID" ]; then
   CHROME_MANIFEST="$(sed -e "s#__HOST_LAUNCHER__#$LAUNCHER#" \
                          -e "s#__EXTENSION_ID__#$EXT_ID#" \
@@ -48,7 +48,8 @@ if [ -n "$EXT_ID" ]; then
     "$HOME/.config/chromium/NativeMessagingHosts" \
     "$HOME/.config/helium/NativeMessagingHosts" \
     "$HOME/.config/net.imput.helium/NativeMessagingHosts" \
-    "$HOME/.config/BraveSoftware/Brave-Browser/NativeMessagingHosts"; do
+    "$HOME/.config/BraveSoftware/Brave-Browser/NativeMessagingHosts" \
+    "$HOME/.config/microsoft-edge/NativeMessagingHosts"; do
     install_if_present "$CHROME_MANIFEST" "$d"
   done
 else
