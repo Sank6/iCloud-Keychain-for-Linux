@@ -10,7 +10,7 @@ GSA_USER_AGENT = "akd/1.0 CFNetwork/978.0.7 Darwin/18.7.0"
 
 # AuthKit device description used by GrandSlam and its 2FA endpoints.
 GSA_CLIENT_INFO = (
-    "<MacBookPro13,2> <Mac OS X;10.15.2;19C57> "
+    "<MacBookPro18,3> <Mac OS X;13.4.1;22F8> "
     "<com.apple.AuthKit/1 (com.apple.akd/1.0)>"
 )
 
