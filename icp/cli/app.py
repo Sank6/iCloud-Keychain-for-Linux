@@ -407,6 +407,29 @@ def _printable(s: str) -> str:
     return "".join(ch if ch.isprintable() else "." for ch in s)
 
 
+# Clipboard tools tried in order: wl-copy (Wayland), xclip (X11).
+_CLIPBOARDS = (
+    ["wl-copy"],
+    ["xclip", "-selection", "clipboard"],
+)
+
+
+def _copy_to_clipboard(text: str) -> bool:
+    """Copy `text` to the clipboard with the first available tool; False if none works."""
+    import shutil
+    import subprocess
+    for cmd in _CLIPBOARDS:
+        if not shutil.which(cmd[0]):
+            continue
+        try:
+            subprocess.run(cmd, input=text.encode(), check=True, timeout=5,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except (OSError, subprocess.SubprocessError):
+            continue
+    return False
+
+
 def _run_tui(store) -> int:
     """A very basic full-screen browser: status header, live-filter search box, and reveal a
     selected password with Enter. Type to filter, up/down to move, Esc to clear the query (or quit
@@ -417,7 +440,7 @@ def _run_tui(store) -> int:
     dom_w = min(max((len(c.domain) for c in creds), default=6), 32)
     user_w = min(max((len(c.username) for c in creds), default=4), 32)
     summary = _printable(f"{_status_summary()}  |  {len(creds)} credential(s)")
-    footer = "type to search | up/down move | Enter reveal | Esc clear/quit"
+    footer = "type to search | up/down move | Enter reveal | Ctrl+P copy password | Ctrl+U copy user | Esc clear/quit"
 
     def draw(stdscr):
         curses.curs_set(0)
@@ -432,7 +455,7 @@ def _run_tui(store) -> int:
             except curses.error:
                 pass
 
-        query, sel, offset, revealed = "", 0, 0, set()
+        query, sel, offset, revealed, msg = "", 0, 0, set(), ""
         while True:
             shown = [c for c in creds if _match(c, query.lower())]
             sel = max(0, min(sel, len(shown) - 1))
@@ -454,11 +477,19 @@ def _run_tui(store) -> int:
                 line = _printable(
                     f"{c.domain:<{dom_w}}  {c.username:<{user_w}}  {pw}{_totp_suffix(c)}")
                 put(3 + idx, 0, line, curses.A_REVERSE if i == sel else curses.A_NORMAL)
-            put(h - 1, 0, footer, curses.A_DIM)
+            put(h - 1, 0, msg or footer, curses.A_BOLD if msg else curses.A_DIM)
             stdscr.refresh()
 
             ch = stdscr.getch()
             if ch == -1:  # timeout: just redraw
+                continue
+            msg = ""
+            if ch in (16, 21):  # Ctrl+P / Ctrl+U (a terminal sends the same byte for Ctrl+Shift+P/U)
+                if shown:
+                    c = shown[sel]
+                    what, value = ("password", c.password) if ch == 16 else ("username", c.username)
+                    msg = (f"{what} copied" if _copy_to_clipboard(value)
+                           else "copy failed (install wl-clipboard or xclip)")
                 continue
             if ch == 27:  # Esc: clear the query, or quit when it is already empty
                 if query:
