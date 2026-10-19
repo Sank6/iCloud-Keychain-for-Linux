@@ -413,7 +413,7 @@ def _maybe_trigger_sync() -> None:
             return  # already triggered recently
         attempt.touch()
         subprocess.Popen(
-            [sys.executable, "-m", "icp.cli.app", "sync"],
+            [sys.executable, "-m", "icp.cli.app", "sync", "--background"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True,
         )

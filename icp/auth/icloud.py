@@ -28,7 +28,13 @@ ICLOUD_CLIENT_INFO = (
 
 
 class ICloudError(AppleError):
-    pass
+    def __init__(self, message: str = "", *, retry_after: float | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class ICloudAuthExpired(ICloudError):
+    """The mmeAuthToken itself is no longer accepted (HTTP 401) - only a sign-in repairs it."""
 
 
 def _basic(user: str, secret: str) -> str:
@@ -90,10 +96,22 @@ def fetch_account_settings(record: dict, device: Device, anisette: Anisette,
     }
     headers.update(identity_headers(device, anisette))
 
-    resp = requests.post(url, headers=headers, data="", verify=False, timeout=20)
+    try:
+        resp = requests.post(url, headers=headers, data="", verify=False, timeout=20)
+    except requests.RequestException as e:
+        raise ICloudError(f"network error talking to account settings: {e}") from e
     logger.debug("get_account_settings -> HTTP %s (%d bytes)",
                  resp.status_code, len(resp.content))
-    return resp.status_code, plist.loads(resp.content)
+    if resp.status_code == 429 or resp.status_code >= 500:
+        from ..ratelimit import retry_after_seconds
+        raise ICloudError(f"account settings: HTTP {resp.status_code} (throttled or unavailable)",
+                          retry_after=retry_after_seconds(resp))
+    try:
+        return resp.status_code, plist.loads(resp.content)
+    except Exception as e:
+        if resp.status_code == 401:
+            return 401, {}
+        raise ICloudError(f"unreadable account settings response (HTTP {resp.status_code})") from e
 
 
 def extract_webservices(settings: dict) -> dict:

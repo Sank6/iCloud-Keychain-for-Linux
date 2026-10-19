@@ -129,12 +129,23 @@ to do anything. To refresh right now:
 icp sync
 ```
 
+Syncs are paced so Apple is never hammered: at most one every 5 minutes (`--force` skips that),
+and after a failure the next try waits longer (5 min, 10, 20 ... up to 6 h, or whatever Apple's
+`Retry-After` asks for). Background syncs (`icp sync --background`, used by the browser helper and
+timers) never sign in with your password and never trigger a verification code on your devices -
+if your sign-in has expired they stop and wait for `icp login`. `icp status` shows the state.
+
+Shared password groups you created in the Passwords app are synced too; groups someone else
+shared with you are not yet.
+
 ## All commands
 
 ```
 login    sign in, join your iCloud Keychain, and download your passwords
 show     browse and search your passwords and Hide My Email addresses
-sync     refresh your passwords now
+sync     refresh your passwords now (--background for unattended runs, --force)
+status   last sync, next allowed sync, whether a login is needed (--json)
+diag     read-only diagnostics: zones, groups (counts only, no secrets)
 logout   sign out (use --wipe-device to also forget this device)
 ```
 

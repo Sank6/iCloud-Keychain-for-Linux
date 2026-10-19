@@ -11,13 +11,21 @@ logger = logging.getLogger(__name__)
 TwoFactorCallback = Callable[[str], str]
 
 
+class TwoFactorUnavailable(GSAError):
+    """2FA is required but nobody can type a code (unattended run) - nothing was triggered."""
+
+
 def authenticate(gsa: GSAClient, username: str, password: str,
-                 twofa: TwoFactorCallback) -> dict:
-    """Return the decrypted server provisioning data (spd), handling 2FA transparently."""
+                 twofa: TwoFactorCallback, *, interactive: bool = True) -> dict:
+    """Return the decrypted server provisioning data (spd), handling 2FA transparently.
+    `interactive=False`: if Apple wants 2FA, stop BEFORE triggering a push/SMS - otherwise an
+    unattended sync would buzz the user's phone and then fail anyway."""
     r, spd = gsa.authenticate(username, password, "sign-in")
     status = r.get("Status", {})
     au = status.get("au")
 
+    if au in ("trustedDeviceSecondaryAuth", "secondaryAuth") and not interactive:
+        raise TwoFactorUnavailable("Apple wants a 2FA code - run `icp login` interactively")
     if au in ("trustedDeviceSecondaryAuth", "secondaryAuth"):
         dsid = spd.get("adsid") or spd.get("DsPrsId")
         idms = spd.get("GsIdmsToken") or spd.get("GsIdMS")

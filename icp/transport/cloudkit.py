@@ -169,21 +169,32 @@ def ck_app_init(container: str, bundle: str, dsid: str, mme_token: str, anisette
                              data="", verify=VERIFY_TLS, timeout=timeout)
     except requests.RequestException as e:
         raise CloudKitError(f"network error talking to ckAppInit: {e}") from e
+    _raise_for_throttle(resp, "ckAppInit")
     if resp.status_code == 401:
         raise CloudKitError("ckAppInit rejected the mmeAuthToken (HTTP 401) - re-run "
                             "`icp login` to refresh it", http_status=401)
     return resp.json()["cloudKitUserId"]
 
 
+def _raise_for_throttle(resp, what: str) -> None:
+    """429 / 5xx -> CloudKitError carrying Retry-After, so the caller backs off (ratelimit.py)."""
+    if resp.status_code == 429 or resp.status_code >= 500:
+        from ..ratelimit import retry_after_seconds
+        raise CloudKitError(f"{what}: HTTP {resp.status_code} (throttled or unavailable)",
+                            http_status=resp.status_code, retry_after=retry_after_seconds(resp))
+
+
 class CloudKitError(AppleError):
     """A CloudKit transport/operation failure (network, HTTP, or a non-success result code)."""
 
     def __init__(self, message: str, *, code: int | None = None,
-                 description: str | None = None, http_status: int | None = None):
+                 description: str | None = None, http_status: int | None = None,
+                 retry_after: float | None = None):
         super().__init__(message)
         self.code = code
         self.description = description
         self.http_status = http_status
+        self.retry_after = retry_after
 
 
 @dataclasses.dataclass
@@ -262,8 +273,13 @@ class CloudKitTransport:
                                  data=body, verify=VERIFY_TLS, timeout=self.timeout)
         except requests.RequestException as e:
             raise CloudKitError(f"network error talking to {url}: {e}") from e
-        messages = undelimit(maybe_gunzip(resp.content))
-        result = parse_response_operation(messages[0])
+        _raise_for_throttle(resp, url)
+        try:
+            messages = undelimit(maybe_gunzip(resp.content))
+            result = parse_response_operation(messages[0])
+        except Exception as e:   # HTML error page, truncated body ...
+            raise CloudKitError(f"unreadable CloudKit response (HTTP {resp.status_code})",
+                                http_status=resp.status_code) from e
         if not result.ok:
             raise CloudKitError(
                 f"CloudKit operation failed: {result.error_description or 'unknown'}",
