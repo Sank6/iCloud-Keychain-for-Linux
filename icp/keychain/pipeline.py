@@ -135,9 +135,16 @@ def build_credential_store(records_by_type: dict, our_peer_id: str,
     TLKs come from two UNIONed sources: `tlks` supplied pre-computed (from
     `fetchRecoverableTLKShares`, the only source for user-controllable views like Passwords) and the
     plain `tlkshare` records in the fetched zones (always-on views like WiFi)."""
+    return CredentialStore.from_items(
+        decrypt_all(records_by_type, our_peer_id, our_encryption_key, tlks))
+
+
+def decrypt_all(records_by_type: dict, our_peer_id: str,
+                our_encryption_key: ec.EllipticCurvePrivateKey, tlks: dict | None = None) -> list[dict]:
+    """Grouped CKKS records -> every decrypted keychain item (plist dicts), all access groups.
+    Same TLK union as build_credential_store; also feeds the shared-group service keys."""
     plain_tlks = unwrap_tlkshares(records_by_type.get("tlkshare", []), our_peer_id,
                                   our_encryption_key)
     merged_tlks = {**plain_tlks, **tlks} if tlks else plain_tlks
     class_keys = unwrap_class_keys(records_by_type.get("synckey", []), merged_tlks)
-    items = decrypt_items(records_by_type.get("item", []), class_keys)
-    return CredentialStore.from_items(items)
+    return decrypt_items(records_by_type.get("item", []), class_keys)

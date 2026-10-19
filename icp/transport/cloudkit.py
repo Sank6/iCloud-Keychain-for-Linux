@@ -24,6 +24,7 @@ VERIFY_TLS = True
 
 CKCODE_INVOKE_URL = "https://gateway.icloud.com/ckcoderouter/api/client/code/invoke"
 CKDATABASE_SYNC_URL = "https://gateway.icloud.com/ckdatabase/api/client/record/sync"
+CKDATABASE_ZONE_SYNC_URL = "https://gateway.icloud.com/ckdatabase/api/client/zone/sync"
 CK_APP_INIT_URL = "https://gateway.icloud.com/setup/setup/ck/v1/ckAppInit"
 CK_MME_CLIENT_INFO = ("<MacBookPro18,3> <Mac OS X;13.4.1;22F8> "
                       "<com.apple.cloudkit.CloudKitDaemon/1970 (com.apple.cloudd/1970)>")
@@ -32,11 +33,23 @@ CUTTLEFISH_BUNDLE = "com.apple.security.cuttlefish"   # CKCode (Cuttlefish) requ
 SECURITYD_BUNDLE = "com.apple.securityd"              # CKKS record fetches
 CUTTLEFISH_SERVICE = "Cuttlefish"
 
+# Shared-passwords ("Shared Groups" in the Passwords app) container - a DIFFERENT CloudKit
+# container from the keychain one above. Each sharing group is its own zone named `group-<uuid>`,
+# in the OWNER's private DB (groups you created) or, for groups shared with you, the shared DB.
+# Provenance: rustpush src/passwords.rs SHARED_PASSWORDS_CONTAINER / SHARED_PASSWORDS_SERVICE.
+KCSHARING_CONTAINER = "com.apple.security.shared.keychain"
+KCSHARING_BUNDLE = "com.apple.security.kcsharing"
+
 ENV_PRODUCTION = 1
 DB_PRIVATE = 1
+DB_SHARED = 2
 ISOLATION_ZONE = 1
 IDENTIFIER_TYPE_DEVICE = 2
 OP_TYPE_FUNCTION_INVOKE = 1101
+# RetrieveZoneChanges: enumerate a database's zones (CloudDBClient op 203, /zone/sync). Request
+# RetrieveZoneChangesRequest{syncContinuationToken=1, maxChangedZones=2}; response field 203.
+OP_TYPE_ZONE_RETRIEVE_CHANGES = 203
+FIELD_ZONE_RETRIEVE_CHANGES = 203
 RESULT_SUCCESS = 1
 
 
@@ -228,11 +241,12 @@ class CloudKitTransport:
         self.mme_client_info = mme_client_info
         self.timeout = timeout
 
-    def _headers(self, bundle: str, routing_hint: str | None = None) -> dict:
+    def _headers(self, bundle: str, routing_hint: str | None = None,
+                 database_scope: str = "Private") -> dict:
         """Shared container headers plus the two CKCode-invoke headers: x-cloudkit-userid
         (cloudKitUserId) and x-cloudkit-authtoken (cloudKitToken - never in the protobuf body)."""
         h = _container_headers(
-            bundle=bundle, container=self.container,
+            bundle=bundle, container=self.container, database_scope=database_scope,
             mme_client_info=self.mme_client_info or CK_MME_CLIENT_INFO)
         h["x-cloudkit-userid"] = self.user_id
         h["x-cloudkit-authtoken"] = self.ck_token
@@ -242,13 +256,15 @@ class CloudKitTransport:
         return h
 
     def _perform(self, url: str, op_type: int, request_field: int, request_bytes: bytes,
-                 *, bundle: str, routing_hint: str | None = None) -> CloudKitResult:
+                 *, bundle: str, routing_hint: str | None = None,
+                 database_scope: str = "Private", database: int = DB_PRIVATE) -> CloudKitResult:
         """LIVE. Build + gzip + POST a RequestOperation, parse + check the ResponseOperation."""
-        header = build_header(self.device, container=self.container, bundle=bundle)
+        header = build_header(self.device, container=self.container, bundle=bundle,
+                              database=database)
         req = build_request_operation_generic(header, op_type, request_field, request_bytes)
         body = gzip.compress(delimit(req))
         try:
-            resp = requests.post(url, headers=self._headers(bundle, routing_hint),
+            resp = requests.post(url, headers=self._headers(bundle, routing_hint, database_scope),
                                  data=body, verify=VERIFY_TLS, timeout=self.timeout)
         except requests.RequestException as e:
             raise CloudKitError(f"network error talking to {url}: {e}") from e
@@ -268,9 +284,25 @@ class CloudKitTransport:
                              bundle=CUTTLEFISH_BUNDLE,
                              routing_hint=f"{CUTTLEFISH_SERVICE}/{op_name}")
 
-    def fetch_records(self, zone_request_bytes: bytes) -> bytes:
-        """LIVE record fetch (RecordRetrieveChanges) -> retrieveChangesResponse(213) bytes."""
+    def fetch_records(self, zone_request_bytes: bytes, *, bundle: str = SECURITYD_BUNDLE,
+                      database_scope: str = "Private", database: int = DB_PRIVATE) -> bytes:
+        """LIVE record fetch (RecordRetrieveChanges) -> retrieveChangesResponse(213) bytes.
+        `bundle`/`database_scope`/`database` default to the keychain private-DB securityd fetch;
+        the kcsharing probe overrides them to read another container's zones (read-only)."""
         result = self._perform(
             CKDATABASE_SYNC_URL, ckks.OP_TYPE_RECORD_RETRIEVE_CHANGES,
-            ckks.FIELD_RETRIEVE_CHANGES, zone_request_bytes, bundle=SECURITYD_BUNDLE)
+            ckks.FIELD_RETRIEVE_CHANGES, zone_request_bytes, bundle=bundle,
+            database_scope=database_scope, database=database)
         return result.field(ckks.FIELD_RETRIEVE_CHANGES) or b""
+
+    def fetch_zone_changes(self, continuation: bytes | None = None, *, bundle: str,
+                           database_scope: str = "Private", database: int = DB_PRIVATE) -> bytes:
+        """LIVE zone enumeration (RetrieveZoneChanges, op 203) -> retrieveZoneChangesResponse(203)
+        bytes. Read-only: lists the zones of one database (no save/delete). Caller loops on the
+        returned continuation token until status == 2."""
+        req = (Writer().bytes(1, continuation).finish())
+        result = self._perform(
+            CKDATABASE_ZONE_SYNC_URL, OP_TYPE_ZONE_RETRIEVE_CHANGES,
+            FIELD_ZONE_RETRIEVE_CHANGES, req, bundle=bundle,
+            database_scope=database_scope, database=database)
+        return result.field(FIELD_ZONE_RETRIEVE_CHANGES) or b""

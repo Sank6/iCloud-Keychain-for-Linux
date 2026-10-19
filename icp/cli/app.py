@@ -664,6 +664,49 @@ def cmd_sync(args) -> int:
         lock.close()
 
 
+def cmd_diag(args) -> int:
+    """Read-only diagnostics (see diag.zone_report): fetches like `sync`, never writes the vault."""
+    from ..octagon import client as octagon
+    from ..octagon.client import OctagonError
+    from ..transport.cloudkit import CloudKitError
+
+    what = getattr(args, "what", "zones")
+    s = session.load()
+    if not s:
+        ui.err("not signed in - run: icp login")
+        return 1
+    device = Device.load_or_create()
+    anisette = Anisette(args.anisette)
+    try:
+        _ensure_fresh_tokens(s, device, anisette, interactive=sys.stdin.isatty())
+        session.save(s)
+        if what == "sharing":
+            diag.sharing_report(s, device, anisette, ui.out)
+            return 0
+        if what == "container":
+            if not getattr(args, "container", None):
+                ui.err("`diag container` needs --container <id> (and usually --bundle <id>)")
+                return 1
+            diag.sharing_report(s, device, anisette, ui.out,
+                                container=args.container, bundle=getattr(args, "bundle", None))
+            return 0
+        # `zones` reads the keychain CKKS views and still requires a joined keychain peer.
+        if not (s.get("octagon") or {}).get("peer_id"):
+            ui.err("not joined to the keychain - run: icp login")
+            return 1
+        client = octagon.OctagonClient(s, device, anisette)
+        session.save(s)
+        if what == "groups":
+            diag.groups_report(client, ui.out)
+            session.save(s)   # caches the shared-container user id
+        else:
+            diag.zone_report(client, ui.out)
+    except (icloud.ICloudError, AnisetteError, GSAError, OctagonError, CloudKitError) as e:
+        ui.err(f"diag failed: {e}")
+        return 1
+    return 0
+
+
 def _ensure_web_session(s: dict, *, interactive: bool):
     """Reach a valid idmsa web session (auth/webauth.py). Reuses a saved trust token when
     possible; otherwise signs in with the saved password and prompts for 2FA once. Returns
@@ -750,6 +793,16 @@ def main(argv=None) -> int:
 
     sub.add_parser("sync", help="re-fetch and decrypt the keychain into the vault"
                    ).set_defaults(func=cmd_sync)
+
+    dp = sub.add_parser("diag", help="read-only diagnostics (counts and access groups, no secrets)")
+    dp.add_argument("what", nargs="?", default="zones", choices=["zones", "sharing", "container", "groups"],
+                    help="zones: keychain CKKS zones this peer sees; "
+                         "groups: open + decrypt the shared password groups (counts only); "
+                         "sharing: probe the shared-passwords container for group zones; "
+                         "container: probe an arbitrary container (needs --container)")
+    dp.add_argument("--container", help="container id for `diag container`")
+    dp.add_argument("--bundle", help="bundle id to use for `diag container`")
+    dp.set_defaults(func=cmd_diag)
 
     op = sub.add_parser("logout", help="clear the stored session")
     op.add_argument("--wipe-device", action="store_true", help="also remove the device identity")

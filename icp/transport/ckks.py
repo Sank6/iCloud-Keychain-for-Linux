@@ -51,6 +51,35 @@ def build_retrieve_changes_request(zone_identifier: bytes,
             .finish())
 
 
+def _parse_zone_identifier(raw: bytes) -> dict:
+    """RecordZoneIdentifier{value=1 Identifier, ownerIdentifier=2 Identifier} -> {name, owner,
+    raw}. `raw` is kept so a record fetch can address the same zone verbatim."""
+    f = decode_fields(raw)
+    value = first(f, 1)
+    owner = first(f, 2)
+    return {
+        "name": first_str(decode_fields(value), 1) if value is not None else "",
+        "owner": first_str(decode_fields(owner), 1) if owner is not None else "",
+        "raw": raw,
+    }
+
+
+def parse_zone_changes_response(raw: bytes) -> dict:
+    """RetrieveZoneChangesResponse -> {zones, continuation_token, status}. status 2 = done.
+    Each zone: {name, owner, change_type, raw} (raw = the RecordZoneIdentifier message)."""
+    f = decode_fields(raw)
+    zones = []
+    for change in f.get(1, []):
+        cf = decode_fields(change)
+        zid = first(cf, 1)
+        if zid is None:
+            continue
+        info = _parse_zone_identifier(zid)
+        info["change_type"] = first(cf, 2, 0)   # 2 = deleted
+        zones.append(info)
+    return {"zones": zones, "continuation_token": first(f, 2), "status": first(f, 3)}
+
+
 @dataclasses.dataclass
 class CloudKitRecord:
     record_name: str        # identifier value name (usually a UUID)

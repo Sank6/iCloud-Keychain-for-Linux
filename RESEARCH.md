@@ -444,3 +444,52 @@ auth     web-session cookies (no bearer token)
 
 It also documents `v1/hme/{generate, reserve, updateMetaData, deactivate, reactivate, delete,
 updateForwardTo}`, which mutate real account state and are deliberately not implemented here.
+
+## Shared password groups (KCSharing, read-only)
+
+Groups from the Passwords app ("Shared Groups") are not CKKS items. They live in their own
+CloudKit container, `com.apple.security.shared.keychain` (bundle `com.apple.security.kcsharing`),
+one zone per group named `group-<UUID>`: in the owner's **private** DB for groups you created, in
+the **shared** DB for groups shared with you (the participant path - share info + invited
+protection - is not implemented; `icp diag sharing` shows whether such zones exist).
+
+Fetch (all read-only): `zone/sync` (RetrieveZoneChanges, op 203) lists the zones;
+`zone/retrieve` (op 201, `ZoneRetrieveRequest{zoneIdentifier=1}`) returns the zone with
+`protectionInfo(3)` and `recordProtectionInfo(6)`, each `ProtectionInfo{protectionInfo=1 bytes}`;
+`record/sync` (op 213) returns `item` records and one `cloudkit.share` record. Never call the
+zone/record save ops - a client that "creates the zone if missing" would mutate the account.
+
+Decryption chain (`icp/sharing/pcs.py`, `groups.py`):
+
+1. Zone `protectionInfo` is a DER `PCSShareProtection` ([APPLICATION 1] SEQUENCE: keyset
+   `{INTEGER, SET OF {{keytype, OCTET pubX}, OCTET wrapped, INTEGER flags OPTIONAL}}`, [0] meta,
+   [1] `{version, OCTET signature data}`, OCTET hmac, [2] truncated key id, ...).
+2. The private key for one keyset entry is a keychain item in the Manatee view, access group
+   `com.apple.ProtectedCloudStorage`, `acct` = base64(pubX); `v_Data` = DER `PCSPrivateKey`
+   (V1 `SEQUENCE{OCTET X||d}` or V2 `[APPLICATION 5]{OCTET protobuf{1:{1: X||d}, 2: signing}}`).
+3. `wrapped` = `u16 bits || ephemeral X || u8 len || AES-KW blob`; ECDH (P-256, X only) + RFC 6637
+   KDF (`sha256(00000001 || Z || curve OID || 12 03 01 08 07 || "Anonymous Sender    " ||
+   "fingerprint" padded to 20)`, first 16 bytes) -> AES key unwrap -> `01 || key || sum16 || pad`.
+4. Unless `signature version == 5` or the share is read-only (`flags & 1`), the working master key
+   is `KDF(master, "MsaeEooevaX fooo 012")`. KDF = SP 800-108 counter mode, HMAC-SHA256,
+   output length = key length. Checks: key id prefix == truncated key id;
+   `HMAC(KDF(k, "hmackey-of-masterkey"), keyset DER || meta || signature data) == hmac`.
+5. PCS ciphertext v3: `03 || id[0:2] || n || id[2:2+n] || iv(12) || tag(12) || data`, AES-128-GCM
+   with key `KDF(k, "encryption key key m")` and AAD = header || caller AAD. Key id =
+   `HMAC(KDF(k, "master key id labell"), "M key input data 2 u")`.
+6. `meta` (AAD empty) -> `{[0] SET OF OCTET symmetric keys, [1] ..., [2] SET OF {INTEGER, OCTET
+   [APPLICATION 2]{name, SET OF PCSPrivateKey, ...}}}` - the zone identity keys.
+7. `recordProtectionInfo` opens with those identity keys -> the default record keys (a record with
+   its own `protectionInfo(13)` opens the same way).
+8. Encrypted fields (`Value.type = 20`, bytes in `bytesValue`): AAD = `"<zone>-<record>-<field>"`.
+   `item.payload` is a `SharingItem` protobuf (3 = internet password: 1 accessGroup, 2 mdat,
+   3 cdat, 4 account, 6 server, 9 data, 12 label, ...; 2 = private key/passkey, skipped).
+   `cloudkit.share.displayName` decrypts to `EncryptedValue{stringValue=6}` - the group name.
+
+The items carry the same access groups as the private keychain (`com.apple.cfnetwork` logins,
+`com.apple.password-manager` sidecars), so they go through `CredentialStore.from_items` unchanged
+and are tagged with the group name (`Credential.group`).
+
+Provenance: container/zone names, op numbers and the PCS layout were learned from the public
+OpenBubbles `rustpush` sources (SSPL). Only facts about Apple's format were taken; the Python
+here is an independent implementation - no rustpush code was copied.

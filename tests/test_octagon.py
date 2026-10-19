@@ -62,7 +62,7 @@ class SyncSourcesTlksFromRpcTests(unittest.TestCase):
         captured = {}
         orig = octagon.decrypt_to_vault
         octagon.decrypt_to_vault = (
-            lambda recs, oct_state, tlks=None: captured.update(recs=recs, tlks=tlks) or 7)
+            lambda recs, oct_state, tlks=None, shared=None: captured.update(recs=recs, tlks=tlks) or 7)
         try:
             n = client.sync_and_decrypt()
         finally:
