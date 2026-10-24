@@ -785,7 +785,7 @@ def main(argv=None) -> int:
                    ).set_defaults(func=cmd_sync)
 
     dp = sub.add_parser("diag", help="read-only diagnostics (counts and access groups, no secrets)")
-    dp.add_argument("what", nargs="?", default="zones", choices=["zones", "sharing", "container", "groups"],
+    dp.add_argument("what", choices=["zones", "sharing", "container", "groups"],
                     help="zones: keychain CKKS zones this peer sees; "
                          "groups: open + decrypt the shared password groups (counts only); "
                          "sharing: probe the shared-passwords container for group zones; "
