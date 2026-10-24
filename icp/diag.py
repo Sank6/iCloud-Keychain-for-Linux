@@ -71,9 +71,6 @@ def dump_token_dict(logger: logging.Logger, spd: dict) -> None:
                  bool(spd.get("adsid")), bool(spd.get("DsPrsId")), bool(spd.get("GsIdmsToken")))
 
 
-_PROBE_ZONES = ("KCSharing", "SharedPasswords", "PasswordsSharing", "Sharing", "SharedGroups")
-
-
 def zone_report(client, out) -> None:
     """Report record and decryption counts without exposing credential values."""
     tlks, view_synckeys = client.fetch_recoverable_tlks()
@@ -81,7 +78,7 @@ def zone_report(client, out) -> None:
 
     per_zone: dict[str, dict] = {}
     all_records: dict[str, list] = {"synckey": list(view_synckeys)}
-    for zone in ckks.KEYCHAIN_ZONES + _PROBE_ZONES:
+    for zone in ckks.KEYCHAIN_ZONES:
         zid = ckks.record_zone_identifier(zone, client.user_id)
         types: Counter = Counter()
         items, continuation, err = [], None, ""

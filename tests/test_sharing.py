@@ -50,6 +50,10 @@ class PrimitiveTests(unittest.TestCase):
         priv = ec.generate_private_key(ec.SECP256R1())
         key = os.urandom(16)
         self.assertEqual(pcs.rfc6637_unwrap(priv, _wrap(pcs.compact_x(priv), key)), key)
+        wrapped = bytearray(_wrap(pcs.compact_x(priv), key))
+        wrapped[-1] ^= 1
+        with self.assertRaises(pcs.PCSError):
+            pcs.rfc6637_unwrap(priv, bytes(wrapped))
 
     def test_compact_private_key_forms(self):
         priv = ec.generate_private_key(ec.SECP256R1())
@@ -61,7 +65,7 @@ class PrimitiveTests(unittest.TestCase):
         key = pcs.PCSKey(os.urandom(16))
         ct = _encrypt(key, b"secret", b"group-x-item-1-payload")
         self.assertEqual(key.decrypt(ct, b"group-x-item-1-payload"), b"secret")
-        with self.assertRaises(Exception):
+        with self.assertRaises(pcs.PCSError):
             key.decrypt(ct, b"group-x-item-2-payload")
         with self.assertRaises(pcs.PCSError):
             pcs.PCSKey(os.urandom(16)).decrypt(ct, b"")

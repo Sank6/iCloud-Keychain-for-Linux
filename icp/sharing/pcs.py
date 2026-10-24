@@ -11,9 +11,10 @@ import hmac
 import struct
 from dataclasses import dataclass, field
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives.keywrap import aes_key_unwrap
+from cryptography.hazmat.primitives.keywrap import InvalidUnwrap, aes_key_unwrap
 
 from ..errors import AppleError
 from ..proto.codec import decode_fields, first
@@ -132,7 +133,10 @@ def rfc6637_unwrap(key: ec.EllipticCurvePrivateKey, wrapped: bytes,
     secret = key.exchange(ec.ECDH(), _public_from_x(eph))
     kek = hashlib.sha256(b"\x00\x00\x00\x01" + secret + _P256_OID + bytes([18, 0x03, 0x01, 8, 7])
                          + b"Anonymous Sender    " + fingerprint.ljust(20, b"\x00")).digest()[:16]
-    msg = aes_key_unwrap(kek, blob)
+    try:
+        msg = aes_key_unwrap(kek, blob)
+    except InvalidUnwrap as e:
+        raise PCSError("PCS key unwrap failed") from e
     pad = msg[-1]
     if pad == 0 or pad > len(msg) - 3 or msg[-pad:] != bytes([pad]) * pad:
         raise PCSError("bad RFC 6637 padding")
@@ -168,10 +172,13 @@ class PCSKey:
         if self.key_id()[:len(want)] != want:
             raise PCSError("ciphertext is for a different key")
         iv, tag, data = ct[hlen:hlen + 12], ct[hlen + 12:hlen + 24], ct[hlen + 24:]
-        dec = Cipher(algorithms.AES(self._derive(b"encryption key key m")),
-                     modes.GCM(iv, tag, min_tag_length=12)).decryptor()
-        dec.authenticate_additional_data(ct[:hlen] + aad)
-        return dec.update(data) + dec.finalize()
+        try:
+            dec = Cipher(algorithms.AES(self._derive(b"encryption key key m")),
+                         modes.GCM(iv, tag, min_tag_length=12)).decryptor()
+            dec.authenticate_additional_data(ct[:hlen] + aad)
+            return dec.update(data) + dec.finalize()
+        except InvalidTag as e:
+            raise PCSError("PCS ciphertext authentication failed") from e
 
 
 def ciphertext_key_id(ct: bytes) -> tuple[bytes, int]:

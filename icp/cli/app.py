@@ -532,6 +532,7 @@ def _join_and_sync(s: dict, device, anisette, username: str, password: str) -> i
             client = octagon.OctagonClient(s, device, anisette)
             session.save(s)
             n = client.sync_and_decrypt()
+            session.save(s)
         except (OctagonError, CloudKitError) as e:
             ui.err(f"sync failed: {e}")
             return 1
@@ -598,6 +599,7 @@ def _join_and_sync(s: dict, device, anisette, username: str, password: str) -> i
 
     try:
         n = client.sync_and_decrypt()
+        session.save(s)
     except CloudKitError as e:
         ui.err(f"joined, but sync failed: {e}")
         return 1
@@ -643,6 +645,7 @@ def cmd_sync(args) -> int:
             client = octagon.OctagonClient(s, device, anisette)
             session.save(s)  # persist the refreshed cloudKitToken + cloudKitUserId from ckAppInit
             n = client.sync_and_decrypt()
+            session.save(s)
         except (OctagonError, CloudKitError) as e:
             ui.err(f"sync failed: {e}")
             return 1
@@ -784,11 +787,12 @@ def main(argv=None) -> int:
     sub.add_parser("sync", help="re-fetch and decrypt the keychain into the vault"
                    ).set_defaults(func=cmd_sync)
 
-    dp = sub.add_parser("diag", help="read-only diagnostics (counts and access groups, no secrets)")
+    dp = sub.add_parser(
+        "diag", help="read-only diagnostics (may print group names and opaque CloudKit IDs)")
     dp.add_argument("what", choices=["zones", "sharing", "container", "groups"],
                     help="zones: keychain CKKS zones this peer sees; "
-                         "groups: open + decrypt the shared password groups (counts only); "
-                         "sharing: probe the shared-passwords container for group zones; "
+                         "groups: group names and decrypted record counts; "
+                         "sharing: zone/owner IDs and record counts; "
                          "container: probe an arbitrary container (needs --container)")
     dp.add_argument("--container", help="container id for `diag container`")
     dp.add_argument("--bundle", help="bundle id to use for `diag container`")
