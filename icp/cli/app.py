@@ -12,6 +12,8 @@ import sys
 import time
 import uuid
 from datetime import datetime, timezone
+import shutil
+import subprocess
 
 from . import ui
 from .. import diag
@@ -407,7 +409,6 @@ def _printable(s: str) -> str:
     return "".join(ch if ch.isprintable() else "." for ch in s)
 
 
-# Clipboard tools tried in order: wl-copy (Wayland), xclip (X11).
 _CLIPBOARDS = (
     ["wl-copy"],
     ["xclip", "-selection", "clipboard"],
@@ -416,11 +417,8 @@ _CLIPBOARDS = (
 
 def _copy_to_clipboard(text: str) -> bool:
     """Copy `text` to the clipboard with the first available tool; False if none works."""
-    import shutil
-    import subprocess
     for cmd in _CLIPBOARDS:
-        if not shutil.which(cmd[0]):
-            continue
+        if not shutil.which(cmd[0]): continue
         try:
             subprocess.run(cmd, input=text.encode(), check=True, timeout=5,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -484,7 +482,7 @@ def _run_tui(store) -> int:
             if ch == -1:  # timeout: just redraw
                 continue
             msg = ""
-            if ch in (16, 21):  # Ctrl+P / Ctrl+U (a terminal sends the same byte for Ctrl+Shift+P/U)
+            if ch in (16, 21):  # Ctrl+P / Ctrl+U 
                 if shown:
                     c = shown[sel]
                     what, value = ("password", c.password) if ch == 16 else ("username", c.username)
