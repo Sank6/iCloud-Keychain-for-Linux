@@ -33,10 +33,6 @@ CUTTLEFISH_BUNDLE = "com.apple.security.cuttlefish"   # CKCode (Cuttlefish) requ
 SECURITYD_BUNDLE = "com.apple.securityd"              # CKKS record fetches
 CUTTLEFISH_SERVICE = "Cuttlefish"
 
-# Shared-passwords ("Shared Groups" in the Passwords app) container - a DIFFERENT CloudKit
-# container from the keychain one above. Each sharing group is its own zone named `group-<uuid>`,
-# in the OWNER's private DB (groups you created) or, for groups shared with you, the shared DB.
-# Provenance: rustpush src/passwords.rs SHARED_PASSWORDS_CONTAINER / SHARED_PASSWORDS_SERVICE.
 KCSHARING_CONTAINER = "com.apple.security.shared.keychain"
 KCSHARING_BUNDLE = "com.apple.security.kcsharing"
 
@@ -46,8 +42,6 @@ DB_SHARED = 2
 ISOLATION_ZONE = 1
 IDENTIFIER_TYPE_DEVICE = 2
 OP_TYPE_FUNCTION_INVOKE = 1101
-# RetrieveZoneChanges: enumerate a database's zones (CloudDBClient op 203, /zone/sync). Request
-# RetrieveZoneChangesRequest{syncContinuationToken=1, maxChangedZones=2}; response field 203.
 OP_TYPE_ZONE_RETRIEVE_CHANGES = 203
 FIELD_ZONE_RETRIEVE_CHANGES = 203
 RESULT_SUCCESS = 1
@@ -286,9 +280,7 @@ class CloudKitTransport:
 
     def fetch_records(self, zone_request_bytes: bytes, *, bundle: str = SECURITYD_BUNDLE,
                       database_scope: str = "Private", database: int = DB_PRIVATE) -> bytes:
-        """LIVE record fetch (RecordRetrieveChanges) -> retrieveChangesResponse(213) bytes.
-        `bundle`/`database_scope`/`database` default to the keychain private-DB securityd fetch;
-        the kcsharing probe overrides them to read another container's zones (read-only)."""
+        """LIVE. Fetch changed records from a CloudKit database."""
         result = self._perform(
             CKDATABASE_SYNC_URL, ckks.OP_TYPE_RECORD_RETRIEVE_CHANGES,
             ckks.FIELD_RETRIEVE_CHANGES, zone_request_bytes, bundle=bundle,
@@ -297,9 +289,7 @@ class CloudKitTransport:
 
     def fetch_zone_changes(self, continuation: bytes | None = None, *, bundle: str,
                            database_scope: str = "Private", database: int = DB_PRIVATE) -> bytes:
-        """LIVE zone enumeration (RetrieveZoneChanges, op 203) -> retrieveZoneChangesResponse(203)
-        bytes. Read-only: lists the zones of one database (no save/delete). Caller loops on the
-        returned continuation token until status == 2."""
+        """LIVE. Enumerate changed zones in a CloudKit database."""
         req = (Writer().bytes(1, continuation).finish())
         result = self._perform(
             CKDATABASE_ZONE_SYNC_URL, OP_TYPE_ZONE_RETRIEVE_CHANGES,

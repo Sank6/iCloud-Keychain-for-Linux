@@ -1,16 +1,4 @@
-"""Shared password groups ("Shared Groups" in the Passwords app) - fetch + decrypt, read-only.
-
-Groups live in their own CloudKit container (`com.apple.security.shared.keychain`), one zone per
-group named `group-<uuid>`, in the owner's PRIVATE database (groups shared *with* us sit in the
-SHARED database and need the participant path - not implemented). Per zone:
-
-  zone/retrieve      -> zone.protectionInfo (PCS, wrapped to our Manatee service key)
-                        zone.recordProtectionInfo (PCS, wrapped to the zone's identity keys)
-  record/sync        -> `item` records (encrypted `payload` = SharingItem protobuf) and one
-                        `cloudkit.share` record (encrypted `displayName` = the group's name)
-
-Only fetch operations are used - never zone/record save, share accept or any other write.
-"""
+"""Fetch and decrypt owned shared-password groups using read-only CloudKit operations."""
 
 from __future__ import annotations
 
@@ -32,7 +20,6 @@ FIELD_TYPE_ENCRYPTED_BYTES = 20
 
 
 def _fetch_zone(transport, zone_raw: bytes) -> dict:
-    """zone/retrieve -> {protection, record_protection} (raw PCS blobs, may be None)."""
     result = transport._perform(
         CKDATABASE_ZONE_RETRIEVE_URL, OP_TYPE_ZONE_RETRIEVE, FIELD_ZONE_RETRIEVE,
         Writer().bytes(1, zone_raw).finish(), bundle=cloudkit.KCSHARING_BUNDLE)
@@ -48,8 +35,7 @@ def _fetch_zone(transport, zone_raw: bytes) -> dict:
 
 
 def _parse_record(raw: bytes) -> dict:
-    """Record -> {name, type, fields: {name: (type, bytesValue)}, protection}. Keeps the raw
-    encrypted bytes (ckks.parse_record drops the protection info this needs)."""
+    """Parse protection data omitted by ckks.parse_record."""
     f = decode_fields(raw)
     rid = first(f, 2)
     name = ""
@@ -73,7 +59,7 @@ def _parse_record(raw: bytes) -> dict:
 
 def _fetch_records(transport, zone_raw: bytes) -> list[dict]:
     out, continuation = [], None
-    for _ in range(50):                              # page cap
+    for _ in range(50):
         raw = transport.fetch_records(ckks.build_retrieve_changes_request(zone_raw, continuation),
                                       bundle=cloudkit.KCSHARING_BUNDLE)
         f = decode_fields(raw)
@@ -92,11 +78,10 @@ def _double(v) -> float:
 
 
 def sharing_item_to_keychain(payload: bytes) -> dict | None:
-    """SharingItem{3: SharingInternetPassword} -> a keychain-style item dict, so the normal
-    CredentialStore.from_items classification (logins, metadata sidecars, ...) applies as-is."""
+    """Convert a SharingInternetPassword to the normal keychain item shape."""
     ip = first(decode_fields(payload), 3)
     if ip is None:
-        return None                                  # privateKey items (passkeys) - skipped
+        return None
     f = decode_fields(ip)
     item = {
         "agrp": first_str(f, 1, ""),
@@ -114,7 +99,6 @@ def sharing_item_to_keychain(payload: bytes) -> dict | None:
 
 
 def _open_zone(transport, zone: dict, keychain_keys: dict[bytes, bytes]):
-    """-> (zone identity keys, default record keys)."""
     z = _fetch_zone(transport, zone["raw"])
     if not z["protection"]:
         raise pcs.PCSError("zone has no protection info")
@@ -145,8 +129,7 @@ def _decrypt_field(rec: dict, zone_name: str, fname: str, keys) -> bytes | None:
 
 
 def fetch_groups(record: dict, device, anisette, keychain_items: list[dict]) -> list[dict]:
-    """Every shared group we own -> [{id, name, items: [keychain-style dicts]}]. A group that
-    fails to open is logged and skipped; the caller's own keychain is never affected."""
+    """Fetch owned groups, skipping any that cannot be opened."""
     mme = record.get("mme") or {}
     tokens = mme.get("tokens") or {}
     ck_token, mme_token = tokens.get("cloudKitToken"), mme.get("mmeAuthToken")
@@ -154,7 +137,6 @@ def fetch_groups(record: dict, device, anisette, keychain_items: list[dict]) -> 
     if not ck_token or not mme_token:
         raise pcs.PCSError("no CloudKit token in session")
 
-    # per-container user id, cached in the session like the keychain container's
     user_id = mme.get("kcsharingUserId")
     if not user_id:
         user_id = cloudkit.ck_app_init(cloudkit.KCSHARING_CONTAINER, cloudkit.KCSHARING_BUNDLE,

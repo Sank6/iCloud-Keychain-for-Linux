@@ -1,12 +1,19 @@
 """Diagnostic logging for the token flow. `login --debug` writes a redacted transcript to
 ~/.config/icp/debug-<ts>.log - secret values are replaced with their length, safe to share."""
 
+from collections import Counter
 import json
 import logging
+import plistlib
 import time
 from pathlib import Path
 
 from . import paths
+from .keychain import pipeline
+from .octagon.client import load_peer_keys
+from .sharing import groups as sharing
+from .transport import ckks, cloudkit
+from .vault.host import CredentialStore, classify_item
 
 # Keys whose string values must never be written verbatim.
 _SECRET_HINTS = (
@@ -64,23 +71,11 @@ def dump_token_dict(logger: logging.Logger, spd: dict) -> None:
                  bool(spd.get("adsid")), bool(spd.get("DsPrsId")), bool(spd.get("GsIdmsToken")))
 
 
-# Extra zone names probed by `icp diag zones` (read-only fetch; an unknown zone just errors out).
-# Guesses for where shared password groups might live - Apple's KCSharing code is closed source.
 _PROBE_ZONES = ("KCSharing", "SharedPasswords", "PasswordsSharing", "Sharing", "SharedGroups")
 
 
 def zone_report(client, out) -> None:
-    """`icp diag zones`: which keychain zones this peer sees and what they hold - counts and
-    access groups (`agrp`) only. Never prints a domain, username, label or secret value.
-
-    Answers "why is a login missing": a zone we can't fetch, items we can't decrypt (no TLK for
-    that view), or items decrypted but dropped by `classify_item` (e.g. an unknown agrp)."""
-    from collections import Counter
-    from .transport import ckks, cloudkit
-    from .keychain import pipeline
-    from .octagon.client import load_peer_keys
-    from .vault.host import classify_item
-
+    """Report record and decryption counts without exposing credential values."""
     tlks, view_synckeys = client.fetch_recoverable_tlks()
     out(f"TLKs via fetchRecoverableTLKShares: {len(tlks)}")
 
@@ -123,7 +118,6 @@ def zone_report(client, out) -> None:
             agrps[(zone, g)] += 1
             kind = classify_item(it)[0]
             kinds.setdefault(f"{zone} {g}", Counter())[kind] += 1
-            # Form only (does it look like a login?), never the values themselves.
             shape = kinds[f"{zone} {g}"]
             shape["+srvr"] += bool(it.get("srvr"))
             shape["+acct"] += bool(it.get("acct"))
@@ -131,10 +125,9 @@ def zone_report(client, out) -> None:
             if isinstance(raw, (bytes, bytearray)) and raw[:6] == b"bplist":
                 shape["+v_plist"] += 1
                 try:
-                    import plistlib
                     pl = plistlib.loads(bytes(raw))
                     if isinstance(pl, dict):
-                        for k in pl:             # key NAMES only, never values
+                        for k in pl:
                             shape[f"key:{k}"] += 1
                 except Exception:
                     pass
@@ -150,24 +143,12 @@ def zone_report(client, out) -> None:
         out(f"  {zone:<14} {g:<55} {n:>5}  {k}")
 
 
-# --- Shared-passwords ("Shared Groups") container probe --------------------------------------
-# A sharing group the user OWNS lives not in the keychain CKKS container but in container
-# `com.apple.security.shared.keychain` (bundle `com.apple.security.kcsharing`): one CloudKit zone
-# per group, named `group-<uuid>`, in the owner's PRIVATE DB (groups shared WITH the user sit in
-# the SHARED DB). Provenance: rustpush src/passwords.rs. This probe is strictly read-only - it
-# only enumerates zones (RetrieveZoneChanges) and counts records (RecordRetrieveChanges); it never
-# decrypts, accepts a share, or writes anything, and it prints only zone/record-type NAMES and
-# counts (group zone names are UUIDs, owner is an opaque per-container id - no personal data).
-
 def _probe_scope(transport, bundle, scope, dbnum, out) -> None:
-    from collections import Counter
-    from .transport import ckks, cloudkit
-
     out("")
     out(f"  [{scope} DB] enumerating zones (RetrieveZoneChanges)...")
     zones, continuation = [], None
     try:
-        for _ in range(25):                       # page cap: keep request volume modest
+        for _ in range(25):
             page = ckks.parse_zone_changes_response(transport.fetch_zone_changes(
                 continuation, bundle=bundle, database_scope=scope, database=dbnum))
             zones.extend(page["zones"])
@@ -179,7 +160,7 @@ def _probe_scope(transport, bundle, scope, dbnum, out) -> None:
         out(f"    zone list FAILED code={getattr(e, 'code', '')} "
             f"http={getattr(e, 'http_status', '')}: {e}")
         return
-    except Exception as e:                         # noqa: BLE001 - never crash a probe; class only
+    except Exception as e:  # noqa: BLE001 - diagnostics must not crash
         out(f"    zone list error: {type(e).__name__}")
         return
 
@@ -208,17 +189,13 @@ def _probe_scope(transport, bundle, scope, dbnum, out) -> None:
             out(f"      records in {z['name']!r}: {sum(types.values())}  ({summary})")
         except cloudkit.CloudKitError as e:
             out(f"      records in {z['name']!r}: FAILED code={getattr(e, 'code', '')}: {e}")
-        except Exception as e:                     # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 - diagnostics must not crash
             out(f"      records in {z['name']!r}: error {type(e).__name__}")
 
 
 def sharing_report(record: dict, device, anisette, out, *,
                    container: str | None = None, bundle: str | None = None) -> None:
-    """`icp diag sharing` / `icp diag container <id>`: read-only probe of a CloudKit container's
-    private + shared DBs for shared-password group zones. Reuses the session's existing tokens
-    (no re-auth); if they are missing, reports and stops rather than prompting."""
-    from .transport import cloudkit
-
+    """Report shared-group zones and record counts without writing to CloudKit."""
     container = container or cloudkit.KCSHARING_CONTAINER
     bundle = bundle or cloudkit.KCSHARING_BUNDLE
 
@@ -251,14 +228,7 @@ def sharing_report(record: dict, device, anisette, out, *,
 
 
 def groups_report(client, out) -> None:
-    """`icp diag groups`: open every shared password group we own and report what decrypts -
-    group name, item count and how icp classifies the items. Never prints a login's values."""
-    from collections import Counter
-    from .keychain import pipeline
-    from .octagon.client import load_peer_keys
-    from .sharing import groups as sharing
-    from .vault.host import CredentialStore, classify_item
-
+    """Report decryptable groups and item counts without exposing credential values."""
     tlks, view_synckeys = client.fetch_recoverable_tlks()
     records = client.sync_keychain()
     records.setdefault("synckey", []).extend(view_synckeys)

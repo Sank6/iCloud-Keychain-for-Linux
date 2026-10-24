@@ -141,8 +141,7 @@ def build_credential_store(records_by_type: dict, our_peer_id: str,
 
 def decrypt_all(records_by_type: dict, our_peer_id: str,
                 our_encryption_key: ec.EllipticCurvePrivateKey, tlks: dict | None = None) -> list[dict]:
-    """Grouped CKKS records -> every decrypted keychain item (plist dicts), all access groups.
-    Same TLK union as build_credential_store; also feeds the shared-group service keys."""
+    """Decrypt all keychain items, including service keys used by shared groups."""
     plain_tlks = unwrap_tlkshares(records_by_type.get("tlkshare", []), our_peer_id,
                                   our_encryption_key)
     merged_tlks = {**plain_tlks, **tlks} if tlks else plain_tlks

@@ -22,7 +22,10 @@ from ..auth.anisette import Anisette, AnisetteError
 from ..auth.device import Device
 from ..auth.gsa import GSAClient, GSAError
 from ..auth.session import SessionError
+from ..octagon import client as octagon
+from ..octagon.client import OctagonError
 from ..totp import generate as totp_generate
+from ..transport.cloudkit import CloudKitError
 
 ICLOUD_AUTH_TOKEN = "com.apple.gs.icloud.auth"
 
@@ -281,7 +284,6 @@ def _status_summary() -> str:
     s = session.load()
     if not s:
         return "not signed in - run: icp login"
-    from ..octagon import client as octagon
     joined = "joined" if octagon.is_joined(s) else "not joined"
     token = ""
     icloud_auth = (s.get("app_tokens") or {}).get(ICLOUD_AUTH_TOKEN) or {}
@@ -521,10 +523,6 @@ def _join_and_sync(s: dict, device, anisette, username: str, password: str) -> i
     prompt that defaults to No. The given password (entered during sign-in) is reused for
     the escrow re-authentication, so it is never prompted twice.
     """
-    from ..octagon import client as octagon
-    from ..octagon.client import OctagonError
-    from ..transport.cloudkit import CloudKitError
-
     # Already a trusted keychain peer (e.g. a token-refresh re-login)? Octagon membership is
     # permanent, so skip the irreversible escrow join and just sync. Gate on is_joined, not a bare
     # peer_id: aborting bottle selection persists peer_id without ever joining.
@@ -613,9 +611,6 @@ def cmd_sync(args) -> int:
     Guarded by a non-blocking file lock so the periodic background trigger and a manual run
     can never overlap (a second sync exits immediately rather than racing on the vault)."""
     import fcntl
-    from ..octagon import client as octagon
-    from ..octagon.client import OctagonError
-    from ..transport.cloudkit import CloudKitError
     from ..paths import sync_lock_file
 
     lock = open(sync_lock_file(), "w")
@@ -665,11 +660,7 @@ def cmd_sync(args) -> int:
 
 
 def cmd_diag(args) -> int:
-    """Read-only diagnostics (see diag.zone_report): fetches like `sync`, never writes the vault."""
-    from ..octagon import client as octagon
-    from ..octagon.client import OctagonError
-    from ..transport.cloudkit import CloudKitError
-
+    """Run read-only diagnostics."""
     what = getattr(args, "what", "zones")
     s = session.load()
     if not s:
@@ -690,7 +681,6 @@ def cmd_diag(args) -> int:
             diag.sharing_report(s, device, anisette, ui.out,
                                 container=args.container, bundle=getattr(args, "bundle", None))
             return 0
-        # `zones` reads the keychain CKKS views and still requires a joined keychain peer.
         if not (s.get("octagon") or {}).get("peer_id"):
             ui.err("not joined to the keychain - run: icp login")
             return 1
@@ -698,7 +688,7 @@ def cmd_diag(args) -> int:
         session.save(s)
         if what == "groups":
             diag.groups_report(client, ui.out)
-            session.save(s)   # caches the shared-container user id
+            session.save(s)  # Persist kcsharingUserId.
         else:
             diag.zone_report(client, ui.out)
     except (icloud.ICloudError, AnisetteError, GSAError, OctagonError, CloudKitError) as e:

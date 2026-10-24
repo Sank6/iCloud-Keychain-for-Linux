@@ -1,15 +1,6 @@
-"""ProtectedCloudStorage (PCS) - the key layer under shared password groups (read-only).
+"""Decrypt ProtectedCloudStorage data for shared-password groups.
 
-Every group zone carries a PCS "share protection" blob: an ASN.1 (DER) structure whose keyset
-holds a symmetric master key wrapped (RFC 6637 style ECDH + AES key wrap) to one or more P-256
-public keys. The owner's matching private key - the "service key" - is an ordinary keychain item
-in the Manatee view (`acct` = base64 of the public key's X coordinate). Unwrapping it yields the
-master key, which decrypts the blob's `meta` (AES-128-GCM, 12-byte tag) into the zone's identity
-keys; those in turn open the zone's record protection, whose keys decrypt each record field.
-
-Written from the protocol description (key layout, labels, field order). Facts about the format
-- the KDF labels, the ASN.1 field order, the 0x03 ciphertext header - are Apple's; the code is ours.
-See RESEARCH.md "Shared password groups".
+See RESEARCH.md for the key hierarchy and wire format.
 """
 
 from __future__ import annotations
@@ -32,8 +23,6 @@ class PCSError(AppleError):
     pass
 
 
-# ------------------------------------------------------------------------------------------ DER
-
 UNIVERSAL, APPLICATION, CONTEXT = 0, 1, 2
 
 
@@ -42,8 +31,8 @@ class Node:
     cls: int
     constructed: bool
     tag: int
-    value: bytes        # content octets
-    raw: bytes          # the whole TLV (tag + length + content)
+    value: bytes  # Content bytes.
+    raw: bytes  # Encoded TLV.
 
     def children(self) -> list["Node"]:
         return parse_all(self.value)
@@ -66,7 +55,7 @@ def _parse_one(buf: bytes, pos: int) -> tuple[Node, int]:
     b = buf[pos]
     cls, constructed, tag = b >> 6, bool(b & 0x20), b & 0x1F
     pos += 1
-    if tag == 0x1F:                              # high tag number form
+    if tag == 0x1F:  # High-tag-number form.
         tag = 0
         while True:
             c = buf[pos]
@@ -102,10 +91,8 @@ def _ctx(nodes: list[Node], tag: int) -> Node | None:
     return next((n for n in nodes if n.cls == CONTEXT and n.tag == tag), None)
 
 
-# ------------------------------------------------------------------------------------- crypto
-
 def kdf_ctr_hmac(key: bytes, label: bytes, context: bytes, length: int) -> bytes:
-    """NIST SP 800-108 KDF in counter mode, HMAC-SHA256: [i]_32 || label || 0x00 || context || [L]_32."""
+    """Derive bytes with the NIST SP 800-108 counter-mode HMAC-SHA256 KDF."""
     suffix = label + b"\x00" + context + struct.pack(">I", length * 8)
     out, i = b"", 1
     while len(out) < length:
@@ -115,8 +102,7 @@ def kdf_ctr_hmac(key: bytes, label: bytes, context: bytes, length: int) -> bytes
 
 
 def _public_from_x(x: bytes) -> ec.EllipticCurvePublicKey:
-    """Apple's compact P-256 public key is the bare X coordinate. ECDH only uses X of the shared
-    point, so either Y works for unwrapping."""
+    """Restore a P-256 point; either Y works because ECDH uses the shared point's X."""
     return ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), b"\x03" + x)
 
 
@@ -157,7 +143,7 @@ def rfc6637_unwrap(key: ec.EllipticCurvePrivateKey, wrapped: bytes,
 
 
 class PCSKey:
-    """A PCS symmetric key (16 bytes). All working keys are derived from it by label."""
+    """A PCS master key and its label-derived working keys."""
 
     def __init__(self, raw: bytes):
         self.raw = raw
@@ -203,8 +189,6 @@ def decrypt_with_any(keys: list[PCSKey], ct: bytes, aad: bytes) -> bytes:
     raise PCSError("no key for this ciphertext")
 
 
-# ----------------------------------------------------------------------------- private keys
-
 def private_key_from_der(der: bytes) -> ec.EllipticCurvePrivateKey:
     """PCSPrivateKey, either V1 SEQUENCE{OCTET compact-key, public OPTIONAL} or
     V2 [APPLICATION 5]{OCTET protobuf{1: {1: compact encryption key}, 2: signing key}}."""
@@ -217,8 +201,6 @@ def private_key_from_der(der: bytes) -> ec.EllipticCurvePrivateKey:
         return private_from_compact(first(decode_fields(enc), 1))
     return private_from_compact(node.children()[0].value)
 
-
-# ------------------------------------------------------------------------- share protection
 
 @dataclass
 class ShareKey:
@@ -249,9 +231,9 @@ class ShareProtection:
         hmac_node = next(n for n in kids if n.cls == UNIVERSAL and n.tag == 0x04)
         share_keys = []
         ks = keyset.children()
-        for entry in next(n for n in ks if n.tag == 0x11).children():   # SET OF PCSShareKey
+        for entry in next(n for n in ks if n.tag == 0x11).children():  # SET OF PCSShareKey
             e = entry.children()
-            keyref = e[0].children()                                   # {keytype, pub_key}
+            keyref = e[0].children()  # {keytype, pub_key}
             flags = e[2].int() if len(e) > 2 and e[2].tag == 0x02 else 0
             share_keys.append(ShareKey(keyref[1].value, e[1].value, flags))
         sig = _ctx(kids, 1).unwrap().children()
@@ -265,8 +247,7 @@ class ShareProtection:
 
     def open(self, privs: list[ec.EllipticCurvePrivateKey]
              ) -> tuple[list[PCSKey], list[ec.EllipticCurvePrivateKey]]:
-        """Unwrap with whichever private key matches a keyset entry. Returns (symmetric keys:
-        master first, then any extra symmetric keys; identity private keys from `meta`)."""
+        """Return symmetric and identity keys opened by the matching private key."""
         by_x = {compact_x(p): p for p in privs}
         match = next(((by_x[k.public_x], k) for k in self.share_keys if k.public_x in by_x), None)
         if match is None:
@@ -286,16 +267,15 @@ class ShareProtection:
         idents = []
         ident_set = _ctx(meta, 2)
         for ident in (ident_set.unwrap().children() if ident_set else []):
-            keyset = parse(ident.children()[1].value)                  # [APPLICATION 2]{...}
+            keyset = parse(ident.children()[1].value)  # [APPLICATION 2]{...}
             inner = keyset.unwrap().children() if keyset.cls == APPLICATION else keyset.children()
-            for k in inner[1].children():                              # SET OF PCSPrivateKey
+            for k in inner[1].children():  # SET OF PCSPrivateKey
                 idents.append(private_key_from_der(k.raw))
         return [master, *symm], idents
 
 
 def keychain_key_index(items: list[dict]) -> dict[bytes, bytes]:
-    """{public X: PCSPrivateKey DER} from decrypted keychain items of the ProtectedCloudStorage
-    access group (the service keys; `acct` is the base64 public key)."""
+    """Index PCS service-key DER by the public X coordinate stored in `acct`."""
     out = {}
     for it in items:
         if not str(it.get("agrp") or "").startswith("com.apple.ProtectedCloudStorage"):

@@ -125,10 +125,7 @@ def build_join_peer(oct_state: dict, keys: ok.PeerKeySet, voucher: cf.SignedBlob
 
 def decrypt_to_vault(records_by_type: dict, oct_state: dict, tlks: dict | None = None,
                      shared=None) -> int:
-    """Decrypt fetched CKKS records into the encrypted vault. Returns credential count. `tlks` are
-    the pre-fetched per-view TLKs (from fetchRecoverableTLKShares), UNIONed with the plain tlkshare
-    records addressed to us. `shared(items)` -> [group dicts] adds the shared password groups;
-    it is best-effort: if it fails, the own keychain is still saved."""
+    """Decrypt CKKS records and any best-effort shared groups into the vault."""
     keys = load_peer_keys(oct_state)
     items = pipeline.decrypt_all(records_by_type, oct_state["peer_id"],
                                  keys.encryption.private_key, tlks)

@@ -1,7 +1,7 @@
-"""Shared password groups: PCS primitives (round trips against our own wrap/encrypt) and the
-SharingItem -> keychain-item mapping. No network."""
+"""Tests for shared-password decryption."""
 
 import hashlib
+import hmac as _hmac
 import os
 import struct
 import unittest
@@ -42,7 +42,6 @@ def _encrypt(key: pcs.PCSKey, plain: bytes, aad: bytes) -> bytes:
 
 class PrimitiveTests(unittest.TestCase):
     def test_kdf_is_sp800_108_counter_hmac(self):
-        import hmac as _hmac
         block = lambda i: _hmac.new(b"k" * 16, struct.pack(">I", i) + b"label\x00ctx"
                                     + struct.pack(">I", 40 * 8), hashlib.sha256).digest()
         self.assertEqual(pcs.kdf_ctr_hmac(b"k" * 16, b"label", b"ctx", 40), (block(1) + block(2))[:40])
@@ -63,16 +62,16 @@ class PrimitiveTests(unittest.TestCase):
         ct = _encrypt(key, b"secret", b"group-x-item-1-payload")
         self.assertEqual(key.decrypt(ct, b"group-x-item-1-payload"), b"secret")
         with self.assertRaises(Exception):
-            key.decrypt(ct, b"group-x-item-2-payload")      # AAD binds zone/record/field
+            key.decrypt(ct, b"group-x-item-2-payload")
         with self.assertRaises(pcs.PCSError):
-            pcs.PCSKey(os.urandom(16)).decrypt(ct, b"")      # wrong key id
+            pcs.PCSKey(os.urandom(16)).decrypt(ct, b"")
 
     def test_v2_private_key_der(self):
         priv = ec.generate_private_key(ec.SECP256R1())
         compact = pcs.compact_x(priv) + priv.private_numbers().private_value.to_bytes(32, "big")
         pb = Writer().message(1, Writer().bytes(1, compact)).finish()
         octet = b"\x04" + bytes([len(pb)]) + pb
-        der = b"\x65" + bytes([len(octet)]) + octet               # [APPLICATION 5] constructed
+        der = b"\x65" + bytes([len(octet)]) + octet  # [APPLICATION 5]
         self.assertEqual(pcs.compact_x(pcs.private_key_from_der(der)), pcs.compact_x(priv))
 
 
@@ -81,7 +80,7 @@ class SharingItemTests(unittest.TestCase):
         ip = (Writer().string(1, "com.apple.cfnetwork")
               .bytes(2, None).string(4, "bastian").string(6, "example.com")
               .bytes(9, b"pw").string(12, "Example").finish())
-        ip = ip + b"\x11" + struct.pack("<d", 700000000.0)        # field 2, wire type 1 (double)
+        ip = ip + b"\x11" + struct.pack("<d", 700000000.0)  # Field 2, fixed64.
         item = groups.sharing_item_to_keychain(Writer().bytes(3, ip).finish())
         self.assertEqual((item["agrp"], item["acct"], item["srvr"], item["v_Data"], item["labl"]),
                          ("com.apple.cfnetwork", "bastian", "example.com", b"pw", "Example"))

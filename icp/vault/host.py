@@ -34,7 +34,7 @@ class Credential:
     notes: str = ""
     last_used: float = 0.0
     totp: str = ""
-    group: str = ""        # shared password group name ("" = own keychain)
+    group: str = ""  # Empty for the user's keychain.
 
     @property
     def recency(self) -> float:
