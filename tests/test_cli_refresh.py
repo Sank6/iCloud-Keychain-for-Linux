@@ -3,7 +3,7 @@
 import pytest
 
 from icp.auth.gsa import GSAError
-from icp.auth.icloud import ICloudError
+from icp.auth.icloud import ICloudAuthExpired
 from icp.cli import app
 
 
@@ -24,7 +24,7 @@ def test_expired_token_reauths_with_saved_password(monkeypatch):
     def fake_refresh(s, *a, **k):
         seq.append("refresh")
         if seq.count("refresh") == 1:      # first attempt: token expired
-            raise ICloudError("iCloud credentials expired")
+            raise ICloudAuthExpired("iCloud credentials expired")
         # second attempt (after re-auth) succeeds
 
     def fake_mint(record, username, password, *a, **k):
@@ -41,10 +41,10 @@ def test_expired_token_reauths_with_saved_password(monkeypatch):
 def test_expired_token_without_saved_password_raises(monkeypatch):
     """No stored password -> surface the expiry so the user runs `icp login`."""
     monkeypatch.setattr(app, "_refresh_webservices",
-                        lambda *a, **k: (_ for _ in ()).throw(ICloudError("expired")))
+                        lambda *a, **k: (_ for _ in ()).throw(ICloudAuthExpired("expired")))
     monkeypatch.setattr(app, "_mint_tokens",
                         lambda *a, **k: pytest.fail("cannot re-auth without a password"))
-    with pytest.raises(ICloudError):
+    with pytest.raises(ICloudAuthExpired):
         app._ensure_fresh_tokens({"username": "u"}, None, None, interactive=False)
 
 
