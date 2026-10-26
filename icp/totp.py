@@ -47,6 +47,48 @@ def uri_from_sidecar(block) -> str:
     return f"otpauth://totp/{urllib.parse.quote(label)}?{urllib.parse.urlencode(params)}"
 
 
+def sidecar_from_input(text: str) -> dict:
+    """Inverse of uri_from_sidecar: a sidecar `totp` dict from an `otpauth://totp` URI or a bare
+    base32 setup key (spaces allowed). Raises ValueError for anything else."""
+    import datetime
+    text = (text or "").strip()
+    if text.lower().startswith("otpauth://"):
+        parsed = urllib.parse.urlparse(text)
+        if parsed.netloc.lower() != "totp":
+            raise ValueError("only time-based (otpauth://totp) codes are supported")
+        query = urllib.parse.parse_qs(parsed.query)
+
+        def param(name, default=""):
+            return (query.get(name) or [default])[0]
+
+        label = urllib.parse.unquote(parsed.path.lstrip("/"))
+        issuer, _, account = label.rpartition(":")
+        issuer = param("issuer") or issuer
+        raw, original = param("secret"), text
+        algorithm = param("algorithm", "SHA1").upper()
+        digits, period = _int(param("digits"), 6), _int(param("period"), 30)
+    else:
+        raw, original, issuer, account = text, "", "", ""
+        algorithm, digits, period = "SHA1", 6, 30
+    raw = raw.replace(" ", "").upper()
+    try:
+        secret = base64.b32decode(raw + "=" * (-len(raw) % 8))
+    except binascii.Error:
+        raise ValueError("2FA key is not valid base32") from None
+    # Only SHA1 (0) has been seen in a real sidecar; the codes for SHA256/SHA512 are a guess, so
+    # they are read but never written.
+    if algorithm != "SHA1":
+        raise ValueError(f"only SHA1 2FA codes can be saved (got {algorithm})")
+    if not secret or not 6 <= digits <= 10 or period < 1:
+        raise ValueError("unsupported 2FA parameters")
+    block = {"secret": secret, "algorithm": 0, "digits": digits,
+             "period": period, "issuer": issuer, "accountName": account,
+             "_initialDate": datetime.datetime(1970, 1, 1)}   # as the Passwords app leaves it
+    if original:
+        block["originalURL"] = original
+    return block
+
+
 def generate(uri: str, at: float | None = None) -> dict:
     """-> {"code", "expires", "period"} for an `otpauth://totp` URI, or {} if it is unusable.
     `expires` is the unix second the code rolls over, so a caller can show a countdown."""

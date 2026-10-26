@@ -303,6 +303,26 @@ class SidecarMergeTests(unittest.TestCase):
                         "supportsPasskey", "enrollPasskeyURL"):
             self.assertNotIn(dropped, blob)
 
+    def test_recently_deleted_never_reaches_the_vault(self):
+        login, side = self._items({"notes": b"old note", "title": b"Deleted"})
+        gone = [{**login, "agrp": "com.apple.cfnetwork-recently-deleted"},
+                {**side, "agrp": "com.apple.password-manager-recently-deleted",
+                 "labl": "Password Manager Metadata: ex.com (a@b.c)"}]
+        self.assertEqual(len(CredentialStore.from_items(gone)), 0)
+        # a live login with the same key must not pick up the deleted metadata
+        c = CredentialStore.from_items([login] + gone[1:]).all()[0]
+        self.assertEqual((c.notes, c.title), ("", "ex.com (a@b.c)"))
+
+    def test_extra_websites_are_kept_and_matched(self):
+        # s_as = the entry's other websites in the Passwords app: [{"s": "<host>"}]
+        store = CredentialStore.from_items(self._items(
+            {"s_as": [{"s": "shop.example.org"}, {"s": b"login.ex.net"}, {"x": 1}, "junk"]}))
+        c = store.all()[0]
+        self.assertEqual(c.sites, ("shop.example.org", "login.ex.net"))
+        self.assertEqual(store.match("https://shop.example.org/cart"), [c])
+        self.assertEqual(store.match("ex.com"), [c])
+        self.assertEqual(store.match("other.org"), [])
+
     def test_last_used_drives_ordering(self):
         # mdat is unix seconds; the sidecar's lUsed is Apple absolute time (+978307200), so
         # 780_000_000 resolves later than stale's mdat.

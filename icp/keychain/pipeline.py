@@ -4,6 +4,7 @@ tlkshare -> TLK -> class key -> item key -> item plist -> credential. See RESEAR
 from __future__ import annotations
 
 import base64
+import os
 import plistlib
 from datetime import datetime, timezone
 
@@ -104,26 +105,50 @@ def unwrap_class_keys(synckeys, tlks: dict) -> dict:
     return keys
 
 
+def record_aad(record) -> list[bytes]:
+    """The associated data of an `item` record as it stands (same for decrypt and re-encrypt:
+    UUID, gen, encver, parent key and the other metadata fields do not change on an edit)."""
+    return authenticated_data_v2(record.record_name, record.fields,
+                                 encver=record.fields.get("encver", 2),
+                                 gen=record.fields.get("gen", 0),
+                                 parent_key_id=record.get_str("parentkeyref") or "")
+
+
+def decrypt_record(record, class_keys: dict) -> dict | None:
+    """One `item` record -> its plist dict, or None (no class key / not decryptable)."""
+    ck = class_keys.get(record.get_str("parentkeyref"))
+    data = record.get_bytes("data")
+    wrapped = record.get_str("wrappedkey")
+    if ck is None or data is None or not wrapped:
+        return None
+    try:
+        item_key = kc.siv_unwrap(ck, base64.b64decode(wrapped))
+        return plistlib.loads(kc.decrypt_item(item_key, data, record_aad(record)))
+    except Exception:
+        return None
+
+
+def encrypt_record_payload(record, class_key: bytes, item: dict) -> dict:
+    """Re-encrypt `item` for an existing `item` record: fresh item key wrapped with the record's
+    class key, same AAD. Returns the new {"data": bytes, "wrappedkey": base64 str} field values."""
+    item_key = os.urandom(64)
+    plaintext = plistlib.dumps(item, fmt=plistlib.FMT_BINARY)
+    return {
+        "data": kc.encrypt_item(item_key, plaintext, record_aad(record)),
+        "wrappedkey": base64.b64encode(kc.siv_wrap(class_key, item_key)).decode(),
+    }
+
+
 def decrypt_items(items, class_keys: dict) -> list[dict]:
-    """Decrypt each `item` record whose parent class key we hold -> the item plist dict."""
+    """Decrypt each `item` record whose parent class key we hold -> the item plist dict. Items
+    without a `UUID` attribute get their record name there - CKKS keeps the two identical, and
+    the vault needs it to tell apart logins that share website + username."""
     out = []
     for it in items:
-        parent = it.get_str("parentkeyref")
-        ck = class_keys.get(parent)
-        data = it.get_bytes("data")
-        wrapped = it.get_str("wrappedkey")
-        if ck is None or data is None or not wrapped:
-            continue
-        item_key = kc.siv_unwrap(ck, base64.b64decode(wrapped))
-        encver = it.fields.get("encver", 2)
-        gen = it.fields.get("gen", 0)
-        aad = authenticated_data_v2(it.record_name, it.fields, encver=encver, gen=gen,
-                                    parent_key_id=parent)
-        try:
-            plaintext = kc.decrypt_item(item_key, data, aad)
-            out.append(plistlib.loads(plaintext))
-        except Exception:
-            continue  # skip an item we can't decrypt, keep the rest
+        d = decrypt_record(it, class_keys)
+        if d is not None:
+            d.setdefault("UUID", it.record_name)
+            out.append(d)
     return out
 
 

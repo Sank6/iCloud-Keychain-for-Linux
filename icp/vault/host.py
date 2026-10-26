@@ -35,6 +35,8 @@ class Credential:
     last_used: float = 0.0
     totp: str = ""
     group: str = ""  # Empty for the user's keychain.
+    sites: tuple = ()  # Extra websites from the Passwords metadata (`s_as`), hosts.
+    uuid: str = ""  # Login UUID (= CloudKit record name); unique, unlike (domain, user).
 
     @property
     def recency(self) -> float:
@@ -44,7 +46,7 @@ class Credential:
         return {"domain": self.domain, "username": self.username,
                 "password": self.password, "title": self.title, "mdat": self.mdat,
                 "notes": self.notes, "last_used": self.last_used, "totp": self.totp,
-                "group": self.group}
+                "group": self.group, "sites": list(self.sites), "uuid": self.uuid}
 
     def wire_dict(self) -> dict:
         """The extension's view: the `totp` URI is replaced by a code generated now."""
@@ -140,11 +142,12 @@ _AGRP_LOGIN = {"com.apple.cfnetwork", "apple"}
 _AGRP_SIDECAR_PREFIX = "com.apple.password-manager"
 _AGRP_CARD = "com.apple.safari.credit-cards"
 _AGRP_PASSKEY = "com.apple.webkit.webauthn"
+_RECENTLY_DELETED = "-recently-deleted"
 
 _SIDECAR_LABEL_PREFIX = "password manager metadata:"
 # Allowlist: unknown keys are dropped. `s_hi` is excluded deliberately - it holds previous
 # passwords in cleartext, which have no autofill use and do not belong in the vault.
-_SIDECAR_KEEP = {"notes", "title", "ctxt", "totp"}
+_SIDECAR_KEEP = {"notes", "title", "ctxt", "totp", "s_as"}
 _PLUMBING_KEYSETS = ({"tlkUUID", "srcIdentity"}, {"viewName", "encryptedData"})
 _CARD_KEYS = {"CardNumber", "FPANHash", "PrimaryAccountIdentifier", "CardSecurityCode"}
 
@@ -209,6 +212,9 @@ def classify_item(item) -> tuple:
     raw = item.get("v_Data") or item.get("password") or b""
     label = str(item.get("labl") or "")
 
+    # the Passwords app's Recently Deleted: `<agrp>-recently-deleted`, never autofilled
+    if agrp.endswith(_RECENTLY_DELETED):
+        return "deleted", None
     if agrp.startswith(_AGRP_SIDECAR_PREFIX):
         payload = classify_payload(raw, label)[1]
         return "sidecar", payload if isinstance(payload, dict) else {}
@@ -246,6 +252,14 @@ def _sidecar_text(value) -> str:
     return str(value) if value else ""
 
 
+def _sidecar_sites(s_as) -> tuple:
+    """Extra websites of a login: the sidecar's `s_as`, a list of {"s": "<host>"}."""
+    if not isinstance(s_as, list):
+        return ()
+    hosts = (_sidecar_text(s.get("s")).strip() for s in s_as if isinstance(s, dict))
+    return tuple(h for h in hosts if h)
+
+
 def decode_payment_cards(items) -> list[dict]:
     """Payment-card records, decoded. Diagnostic only: `from_items` drops these, so they never
     reach the vault or the browser extension."""
@@ -273,8 +287,9 @@ class CredentialStore:
         def match_rank(c: Credential) -> int | None:
             if not _is_credential(c.domain, c.title):  # filters an older, unfiltered vault too
                 return None
-            if domains_match(page_domain, c.domain):
-                return 0 if _normalize_host(page_domain) == _normalize_host(c.domain) else 1
+            for host in (c.domain, *c.sites):
+                if domains_match(page_domain, host):
+                    return 0 if _normalize_host(page_domain) == _normalize_host(host) else 1
             stored = _normalize_host(c.domain)
             if ("." not in stored) and _name_matches_host(page_domain, c.title or c.domain):
                 return 2
@@ -304,7 +319,7 @@ class CredentialStore:
             label = str(it.get("labl") or "")
             kind, payload = classify_item(it)
             # The label names the login the sidecar describes, so trust it over an empty payload.
-            if label.lower().startswith(_SIDECAR_LABEL_PREFIX):
+            if kind != "deleted" and label.lower().startswith(_SIDECAR_LABEL_PREFIX):
                 kind, payload = "sidecar", payload if isinstance(payload, dict) else {}
 
             key = (str(domain).lower(), str(username).lower())
@@ -323,17 +338,18 @@ class CredentialStore:
             if (not domain and not username) or not (username or payload):
                 continue
             logins.append((key, str(domain), str(username), payload, title,
-                           _to_unix(it.get("mdat") or it.get("cdat"))))
+                           _to_unix(it.get("mdat") or it.get("cdat")), str(it.get("UUID") or "")))
 
         creds = []
-        for key, domain, username, pw, title, mdat in logins:
+        for key, domain, username, pw, title, mdat, uuid in logins:
             side = sidecars.get(key, {})
             title = _sidecar_text(side.get("title")) or title
             creds.append(Credential(
-                domain=domain, username=username, password=pw, title=title, mdat=mdat,
+                domain=domain, username=username, password=pw, title=title, mdat=mdat, uuid=uuid,
                 notes=_sidecar_text(side.get("notes")),
                 last_used=_sidecar_last_used(side.get("ctxt")),
                 totp=totp_codes.uri_from_sidecar(side.get("totp")),
+                sites=_sidecar_sites(side.get("s_as")),
             ))
         return cls(creds)
 
