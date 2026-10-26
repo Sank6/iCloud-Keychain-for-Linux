@@ -19,10 +19,10 @@ logger = logging.getLogger(__name__)
 LOGIN_DELEGATES_URL = "https://setup.icloud.com/setup/iosbuddy/loginDelegates"
 ACCOUNT_SETTINGS_URL = "https://setup.icloud.com/setup/get_account_settings"
 
-# AOSKit/accountsd identity for the iCloud setup endpoints (distinct from the GSA akd UA).
+# Windows AOSKit/accountsd identity for both iCloud setup endpoints.
 ICLOUD_USER_AGENT = "com.apple.iCloudHelper/282 CFNetwork/1408.0.4 Darwin/22.5.0"
 ICLOUD_CLIENT_INFO = (
-    "<MacBookPro18,3> <Mac OS X;13.4.1;22F8> "
+    "<PC> <Windows;6.2(0,0);9200> "
     "<com.apple.AOSKit/282 (com.apple.accountsd/113)>"
 )
 

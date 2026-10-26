@@ -1,8 +1,6 @@
-"""Static identity strings used to impersonate a Mac to Apple's GrandSlam service.
+"""Windows client identity used by GrandSlam authentication.
 
-These mirror what AltServer / pypush send. Apple tracks some of these, so they are
-kept stable and Mac-like. The volatile per-request machine data (X-Apple-I-MD*) comes
-from the anisette server, not from here.
+Per-request machine data (X-Apple-I-MD*) comes from the anisette server.
 """
 
 # Sent as the GsService2 User-Agent.
@@ -10,7 +8,7 @@ GSA_USER_AGENT = "akd/1.0 CFNetwork/978.0.7 Darwin/18.7.0"
 
 # AuthKit device description used by GrandSlam and its 2FA endpoints.
 GSA_CLIENT_INFO = (
-    "<MacBookPro18,3> <Mac OS X;13.4.1;22F8> "
+    "<PC> <Windows;6.2(0,0);9200> "
     "<com.apple.AuthKit/1 (com.apple.akd/1.0)>"
 )
 

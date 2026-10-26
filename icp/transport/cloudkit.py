@@ -26,7 +26,7 @@ CKCODE_INVOKE_URL = "https://gateway.icloud.com/ckcoderouter/api/client/code/inv
 CKDATABASE_SYNC_URL = "https://gateway.icloud.com/ckdatabase/api/client/record/sync"
 CKDATABASE_ZONE_SYNC_URL = "https://gateway.icloud.com/ckdatabase/api/client/zone/sync"
 CK_APP_INIT_URL = "https://gateway.icloud.com/setup/setup/ck/v1/ckAppInit"
-CK_MME_CLIENT_INFO = ("<MacBookPro18,3> <Mac OS X;13.4.1;22F8> "
+CK_MME_CLIENT_INFO = ("<PC> <Windows;6.2(0,0);9200> "
                       "<com.apple.cloudkit.CloudKitDaemon/1970 (com.apple.cloudd/1970)>")
 CUTTLEFISH_CONTAINER = "com.apple.security.keychain"
 CUTTLEFISH_BUNDLE = "com.apple.security.cuttlefish"   # CKCode (Cuttlefish) requests

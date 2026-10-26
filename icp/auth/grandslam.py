@@ -1,49 +1,48 @@
 """High-level authentication flow: SRP login + 2FA + PET extraction."""
 
-import logging
 from typing import Callable
 
 from .gsa import GSAClient, GSAError
-
-logger = logging.getLogger(__name__)
 
 # Called with the factor kind ("trusted" | "sms"); must return the 6-digit code.
 TwoFactorCallback = Callable[[str], str]
 
 
 class TwoFactorUnavailable(GSAError):
-    """2FA is required but nobody can type a code (unattended run) - nothing was triggered."""
+    """2FA is required in an unattended run; no additional code was requested."""
 
 
 def authenticate(gsa: GSAClient, username: str, password: str,
                  twofa: TwoFactorCallback, *, interactive: bool = True) -> dict:
     """Return the decrypted server provisioning data (spd), handling 2FA transparently.
-    `interactive=False`: if Apple wants 2FA, stop BEFORE triggering a push/SMS - otherwise an
-    unattended sync would buzz the user's phone and then fail anyway."""
+    `interactive=False` stops before requesting or prompting for a code. Apple can
+    send a trusted-device code during the SRP exchange itself."""
     r, spd = gsa.authenticate(username, password, "sign-in")
-    status = r.get("Status", {})
+    status = r["Status"]
     au = status.get("au")
+    # A 409 without an auth mode means Apple has already sent a trusted-device code.
+    code_sent = status.get("hsc") == 409 and not au
+    if not code_sent and au not in ("trustedDeviceSecondaryAuth", "secondaryAuth"):
+        return spd
 
-    if au in ("trustedDeviceSecondaryAuth", "secondaryAuth") and not interactive:
+    if not interactive:
         raise TwoFactorUnavailable("Apple wants a 2FA code - run `icp login` interactively")
-    if au in ("trustedDeviceSecondaryAuth", "secondaryAuth"):
-        dsid = spd.get("adsid") or spd.get("DsPrsId")
-        idms = spd.get("GsIdmsToken") or spd.get("GsIdMS")
-        if not dsid or not idms:
-            raise GSAError(f"2FA required but missing dsid/GsIdMS in spd: keys={list(spd)}")
 
-        if au == "trustedDeviceSecondaryAuth":
+    dsid, idms = spd["adsid"], spd["GsIdmsToken"]
+    if au == "secondaryAuth":
+        gsa.trigger_sms_factor(dsid, idms)
+        gsa.submit_sms_factor(twofa("sms"), dsid, idms)
+    else:
+        # Requesting another code would invalidate the one Apple already sent.
+        if not code_sent:
             gsa.trigger_trusted_factor(dsid, idms)
-            gsa.submit_trusted_factor(twofa("trusted"), dsid, idms)
-        else:
-            gsa.trigger_sms_factor(dsid, idms)
-            gsa.submit_sms_factor(twofa("sms"), dsid, idms)
+        gsa.submit_trusted_factor(twofa("trusted"), dsid, idms)
 
-        # Re-authenticate: the device is now trusted, so this should NOT prompt again.
-        r, spd = gsa.authenticate(
-            username, password, "re-auth after 2FA (password already verified)")
-        if r.get("Status", {}).get("au"):
-            raise GSAError("still being asked for 2FA after submitting a code")
+    # Re-authenticate to obtain a PET for the now-trusted device.
+    r, spd = gsa.authenticate(username, password, "re-auth after 2FA")
+    status = r["Status"]
+    if status.get("au") or status.get("hsc") == 409:
+        raise GSAError("still being asked for 2FA after submitting a code")
 
     return spd
 
