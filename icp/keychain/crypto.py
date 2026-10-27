@@ -4,6 +4,7 @@ key unwrap. See RESEARCH.md "keychain/crypto.py"."""
 from __future__ import annotations
 
 import hashlib
+import os
 
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM, AESSIV
@@ -59,6 +60,31 @@ def _strip_iso7816_padding(data: bytes) -> bytes:
             return data[:ptr]
         raise KeychainCryptoError("bad ISO-7816-4 padding")
     return data
+
+
+def siv_wrap(key64: bytes, plaintext: bytes, associated_data=None) -> bytes:
+    """Inverse of siv_unwrap (RFC 5297 output: V(16) || ciphertext)."""
+    return AESSIV(key64).encrypt(plaintext, list(associated_data or []))
+
+
+ITEM_PAD_BLOCK = 20  # CKKSItemEncrypter pads to 20-byte blocks, at least two of them
+
+
+def pad_item(plaintext: bytes, block: int = ITEM_PAD_BLOCK) -> bytes:
+    """ISO 7816-4 padding as CKKS applies it: 0x80 then zeros up to a multiple of `block`, with
+    an extra block when the result would be a single block (hides short secrets' lengths)."""
+    pad_len = block - (len(plaintext) % block)
+    if len(plaintext) + pad_len < 2 * block:
+        pad_len += block
+    return plaintext + b"\x80" + b"\x00" * (pad_len - 1)
+
+
+def encrypt_item(item_key64: bytes, plaintext: bytes, aad_values=None) -> bytes:
+    """Inverse of decrypt_item: pad, then `randomIV(16) || SIV(tag||ciphertext)` with the random
+    IV as the first associated-data element."""
+    iv = os.urandom(16)
+    headers = [iv] + list(aad_values or [])
+    return iv + siv_wrap(item_key64, pad_item(plaintext), headers)
 
 
 def decrypt_item(item_key64: bytes, data: bytes, aad_values=None) -> bytes:

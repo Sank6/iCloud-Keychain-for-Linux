@@ -3,7 +3,8 @@
 Interactive: the Apple ID password and 2FA code are read from the terminal and never
 stored. Only the resulting tokens are persisted, encrypted.
 
-Commands: login, show, sync, logout. `show` also folds in Hide My Email aliases.
+Commands: login, show, sync, edit, restore, logout. `show` also folds in Hide My Email aliases.
+Reading is the default; `edit` and `restore` write to iCloud only with an explicit --apply.
 """
 import argparse
 import base64
@@ -758,11 +759,183 @@ def cmd_diag(args) -> int:
         if what == "groups":
             diag.groups_report(client, ui.out)
             session.save(s)  # Persist kcsharingUserId.
+        elif what == "write":
+            import json
+            from ..keychain import write
+            ui.out(json.dumps(write.probe(*write.fetch(client)), indent=1))
         else:
             diag.zone_report(client, ui.out)
     except (icloud.ICloudError, AnisetteError, GSAError, OctagonError, CloudKitError) as e:
         ui.err(f"diag failed: {e}")
         return 1
+    return 0
+
+
+def _write_session(args):
+    """(lock, OctagonClient) for the write commands. Holds the sync lock so a background sync
+    never runs in the middle of an edit."""
+    import fcntl
+    from ..octagon import client as octagon
+    from ..paths import sync_lock_file
+
+    lock = open(sync_lock_file(), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock.close()
+        raise SessionError("busy - a sync is running, try again in a moment")
+    s = session.load()
+    if not s or not (s.get("octagon") or {}).get("peer_id"):
+        lock.close()
+        raise SessionError("not signed in / joined - run: icp login")
+    device = Device.load_or_create()
+    anisette = Anisette(args.anisette)
+    _ensure_fresh_tokens(s, device, anisette, interactive=sys.stdin.isatty(),
+                         allow_password=False)
+    session.save(s)
+    client = octagon.OctagonClient(s, device, anisette)
+    session.save(s)
+    return lock, client
+
+
+def _patch_vault(domain: str, username: str, login: dict, sidecar: dict | None,
+                 old_uuid: str = "") -> None:
+    """Swap the edited login into the local vault right away (the next sync would too). Matched
+    by its id where the vault has one - website + username can belong to several logins."""
+    import dataclasses
+    from ..vault import store as vault
+    from ..vault.host import CredentialStore
+
+    def edited(c) -> bool:
+        if c.group:
+            return False
+        if old_uuid and c.uuid:
+            return c.uuid == old_uuid
+        return c.domain.lower() == domain.lower() and c.username.lower() == username.lower()
+
+    new = CredentialStore.from_items([login] + ([sidecar] if sidecar else [])).all()
+    keep, prev = [], None
+    for c in vault.load_vault().all():
+        if edited(c):
+            prev = prev or c
+        else:
+            keep.append(c)
+    if prev and new:   # sidecar-less logins keep their last-used time
+        new = [dataclasses.replace(new[0], last_used=new[0].last_used or prev.last_used)]
+    vault.save_vault(CredentialStore(keep + new))
+
+
+def _write_report(args, result: dict | None, error: str | None) -> int:
+    import json
+    if getattr(args, "json", False):
+        out = {"ok": error is None, "error": error}
+        if result:
+            out.update({k: result[k] for k in ("diff", "saved", "backups", "dry_run", "uuid",
+                                               "rekey")
+                        if k in result})
+        print(json.dumps(out))
+    elif error:
+        ui.err(error)
+    else:
+        for line in result.get("diff", []):
+            ui.out(f"  {line}")
+        if result.get("dry_run"):
+            ui.out("Dry run - nothing sent. Add --apply to save it to iCloud.")
+        else:
+            ui.out(f"Saved to iCloud: {', '.join(result.get('saved') or [])}.")
+            for uuid_ in result.get("backups") or []:
+                ui.out(f"  backup of {uuid_} - undo with: icp restore {uuid_} --apply")
+    return 0 if error is None else 1
+
+
+def cmd_edit(args) -> int:
+    """Edit one login and save it back to iCloud Keychain (dry run unless --apply)."""
+    from ..keychain import write
+    from ..octagon.client import OctagonError
+    from ..transport.cloudkit import CloudKitError
+
+    fields = {"site": args.site, "username": args.new_username, "title": args.title,
+              "notes": args.notes, "password": None, "trash": args.delete,
+              "add_sites": tuple(args.add_site or ()), "remove_sites": tuple(args.remove_site or ())}
+    if args.password_stdin:
+        fields["password"] = (ui.secret("New password: ") if sys.stdin.isatty()
+                              else sys.stdin.readline().rstrip("\r\n"))
+    elif args.stdin_json:
+        # Notes and passwords can be secrets: callers (a GUI, a script) pass them here, never
+        # as arguments, which every local process can read from /proc.
+        import json
+        try:
+            data = json.loads(sys.stdin.read() or "{}")
+        except ValueError:
+            return _write_report(args, None, "stdin is not JSON")
+        for key in ("site", "username", "title", "notes", "password", "totp"):
+            if isinstance(data.get(key), str):
+                fields[key] = data[key]
+        for key in ("add_sites", "remove_sites"):
+            if isinstance(data.get(key), list):
+                fields[key] = tuple(str(x) for x in data[key])
+        if data.get("trash") is True:
+            fields["trash"] = True
+    changes = write.Changes(**fields)
+    lock = None
+    try:
+        lock, client = _write_session(args)
+        result = write.edit(client, args.domain, args.username, changes, apply=args.apply,
+                            uuid=args.uuid)
+        if args.apply:
+            try:
+                _patch_vault(args.domain, args.username, result["login"], result.get("sidecar"),
+                             result.get("old_uuid", ""))
+            except Exception as e:  # noqa: BLE001 - the save itself went through
+                ui.warn(f"saved, but the local vault was not updated ({e}); `icp sync` will")
+        return _write_report(args, result, None)
+    except (write.WriteError, SessionError, OctagonError, CloudKitError, icloud.ICloudError,
+            AnisetteError, GSAError, ValueError) as e:
+        return _write_report(args, None, str(e))
+    finally:
+        if lock:
+            lock.close()
+
+
+def cmd_restore(args) -> int:
+    """Put the pre-edit version of a record back (from ~/.config/icp/backup)."""
+    from ..keychain import write
+    from ..octagon.client import OctagonError
+    from ..transport.cloudkit import CloudKitError
+
+    lock = None
+    try:
+        lock, client = _write_session(args)
+        result = write.restore(client, args.uuid, apply=args.apply)
+        return _write_report(args, result, None)
+    except (write.WriteError, SessionError, OctagonError, CloudKitError, icloud.ICloudError,
+            AnisetteError, GSAError, ValueError) as e:
+        return _write_report(args, None, str(e))
+    finally:
+        if lock:
+            lock.close()
+
+
+def cmd_write_state(args) -> int:
+    """Write pacing / block state (no network)."""
+    import json
+    from ..keychain import write
+
+    st = write.load_state()
+    if args.clear:
+        st["blocked"] = None
+        write.save_state(st)
+        ui.out("Write block cleared.")
+        return 0
+    allowed, why = write.may_write(st)
+    out = {"blocked": st.get("blocked"), "writes_last_hour":
+           len([t for t in st.get("writes", []) if time.time() - t < 3600]),
+           "may_write": allowed, "reason": why}
+    if args.json:
+        print(json.dumps(out))
+    else:
+        for k, v in out.items():
+            ui.out(f"{k:<17} {v}")
     return 0
 
 
@@ -825,7 +998,8 @@ def main(argv=None) -> int:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     p = argparse.ArgumentParser(
         prog="icp",
-        description="iCloud Passwords for Linux - read-only iCloud Keychain autofill")
+        description="iCloud Passwords for Linux - iCloud Keychain autofill (read-only by default; "
+                    "`edit`/`restore` write only with --apply)")
     p.add_argument("--anisette",
                    help="anisette server URL (default: $ICP_ANISETTE_URL or localhost:6969)")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -864,14 +1038,55 @@ def main(argv=None) -> int:
 
     dp = sub.add_parser(
         "diag", help="read-only diagnostics (may print group names and opaque CloudKit IDs)")
-    dp.add_argument("what", choices=["zones", "sharing", "container", "groups"],
+    dp.add_argument("what", choices=["zones", "sharing", "container", "groups", "write"],
                     help="zones: keychain CKKS zones this peer sees; "
                          "groups: group names and decrypted record counts; "
                          "sharing: zone/owner IDs and record counts; "
-                         "container: probe an arbitrary container (needs --container)")
+                         "container: probe an arbitrary container (needs --container); "
+                         "write: field names/types the edit path relies on (no values)")
     dp.add_argument("--container", help="container id for `diag container`")
     dp.add_argument("--bundle", help="bundle id to use for `diag container`")
     dp.set_defaults(func=cmd_diag)
+
+    ep = sub.add_parser(
+        "edit", help="edit one login and save it to iCloud Keychain (dry run unless --apply)")
+    ep.add_argument("domain", help="the login's website as stored (e.g. example.com)")
+    ep.add_argument("username", help="the login's username as stored")
+    ep.add_argument("--site", help="new primary website (new record, old one deleted after "
+                                   "the new one was read back)")
+    ep.add_argument("--new-username", help="new username (a rekey, like --site)")
+    ep.add_argument("--add-site", action="append", help="add an extra website (repeatable)")
+    ep.add_argument("--remove-site", action="append", help="remove an extra website (repeatable)")
+    ep_in = ep.add_mutually_exclusive_group()
+    ep_in.add_argument("--password-stdin", action="store_true",
+                       help="read the new password from stdin (first line; prompts on a tty)")
+    ep_in.add_argument("--stdin-json", action="store_true",
+                       help="read the changes as JSON from stdin: site, username, password, "
+                            "title, notes, totp (otpauth:// URI or base32 key, \"\" removes it), "
+                            "add_sites, remove_sites, trash (true = --delete) (keeps secrets out "
+                            "of the process list)")
+    ep.add_argument("--uuid", help="the login's id (record name, `uuid` in the vault) - picks "
+                                   "it exactly when several logins share website + username")
+    ep.add_argument("--delete", action="store_true",
+                    help="move the login to Recently Deleted, like the Passwords app (it can be "
+                         "recovered there); not combinable with other changes")
+    ep.add_argument("--title", help="new title (Passwords app name)")
+    ep.add_argument("--notes", help="new notes")
+    ep.add_argument("--apply", action="store_true", help="really save (default: dry run)")
+    ep.add_argument("--json", action="store_true", help="machine-readable result")
+    ep.set_defaults(func=cmd_edit)
+
+    rp = sub.add_parser("restore", help="put the pre-edit version of a record back")
+    rp.add_argument("uuid", help="record uuid of a backup (listed after an edit and in "
+                                 "`edit --json` under `backups`)")
+    rp.add_argument("--apply", action="store_true", help="really save (default: dry run)")
+    rp.add_argument("--json", action="store_true", help="machine-readable result")
+    rp.set_defaults(func=cmd_restore)
+
+    wp = sub.add_parser("write-state", help="write pacing and block state")
+    wp.add_argument("--clear", action="store_true", help="lift the block after an error")
+    wp.add_argument("--json", action="store_true", help="machine-readable output")
+    wp.set_defaults(func=cmd_write_state)
 
     op = sub.add_parser("logout", help="clear the stored session")
     op.add_argument("--wipe-device", action="store_true", help="also remove the device identity")

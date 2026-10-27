@@ -25,6 +25,8 @@ VERIFY_TLS = True
 CKCODE_INVOKE_URL = "https://gateway.icloud.com/ckcoderouter/api/client/code/invoke"
 CKDATABASE_SYNC_URL = "https://gateway.icloud.com/ckdatabase/api/client/record/sync"
 CKDATABASE_ZONE_SYNC_URL = "https://gateway.icloud.com/ckdatabase/api/client/zone/sync"
+CKDATABASE_SAVE_URL = "https://gateway.icloud.com/ckdatabase/api/client/record/save"
+CKDATABASE_DELETE_URL = "https://gateway.icloud.com/ckdatabase/api/client/record/delete"
 CK_APP_INIT_URL = "https://gateway.icloud.com/setup/setup/ck/v1/ckAppInit"
 CK_MME_CLIENT_INFO = ("<PC> <Windows;6.2(0,0);9200> "
                       "<com.apple.cloudkit.CloudKitDaemon/1970 (com.apple.cloudd/1970)>")
@@ -189,9 +191,10 @@ class CloudKitError(AppleError):
 
     def __init__(self, message: str, *, code: int | None = None,
                  description: str | None = None, http_status: int | None = None,
-                 retry_after: float | None = None):
+                 retry_after: float | None = None, client_code: int | None = None):
         super().__init__(message)
         self.code = code
+        self.client_code = client_code      # Result.Error.client code (9 EXISTS, 15 OP_LOCK ...)
         self.description = description
         self.http_status = http_status
         self.retry_after = retry_after
@@ -202,6 +205,7 @@ class CloudKitResult:
     code: int
     error_description: str | None
     fields: dict                       # decoded ResponseOperation top-level fields
+    client_code: int | None = None
 
     @property
     def ok(self) -> bool:
@@ -220,15 +224,19 @@ class CloudKitResult:
 
 def parse_response_operation(raw: bytes) -> CloudKitResult:
     f = decode_fields(raw)
-    code, err = RESULT_SUCCESS, None
+    code, err, client = RESULT_SUCCESS, None, None
     result_blob = first(f, 3)
     if result_blob is not None:
         rf = decode_fields(result_blob)
         code = first(rf, 1, RESULT_SUCCESS)
         err_blob = first(rf, 2)
         if err_blob is not None:
-            err = first_str(decode_fields(err_blob), 4)
-    return CloudKitResult(code=code, error_description=err, fields=f)
+            ef = decode_fields(err_blob)
+            err = first_str(ef, 4)
+            client_blob = first(ef, 1)
+            if client_blob is not None:
+                client = first(decode_fields(client_blob), 1)
+    return CloudKitResult(code=code, error_description=err, fields=f, client_code=client)
 
 
 class CloudKitTransport:
@@ -284,7 +292,7 @@ class CloudKitTransport:
             raise CloudKitError(
                 f"CloudKit operation failed: {result.error_description or 'unknown'}",
                 code=result.code, description=result.error_description,
-                http_status=resp.status_code)
+                http_status=resp.status_code, client_code=result.client_code)
         return result
 
     def invoke(self, op_name: str, parameters: bytes) -> CloudKitResult:
@@ -312,3 +320,17 @@ class CloudKitTransport:
             FIELD_ZONE_RETRIEVE_CHANGES, req, bundle=bundle,
             database_scope=database_scope, database=database)
         return result.field(FIELD_ZONE_RETRIEVE_CHANGES) or b""
+
+    def save_record(self, save_request: bytes) -> str:
+        """LIVE, WRITES TO THE ACCOUNT. One RecordSave (op 210) into the keychain private DB ->
+        the record's new etag. Only `keychain/write.py` calls this, after its own checks."""
+        result = self._perform(
+            CKDATABASE_SAVE_URL, ckks.OP_TYPE_RECORD_SAVE, ckks.FIELD_RECORD_SAVE,
+            save_request, bundle=SECURITYD_BUNDLE)
+        return ckks.parse_save_response(result.field(ckks.FIELD_RECORD_SAVE) or b"")
+
+    def delete_record(self, delete_request: bytes) -> None:
+        """LIVE, WRITES TO THE ACCOUNT. One RecordDelete (op 214). Only `keychain/write.py` calls
+        this, and only for the old version of a login whose replacement was verified."""
+        self._perform(CKDATABASE_DELETE_URL, ckks.OP_TYPE_RECORD_DELETE, ckks.FIELD_RECORD_DELETE,
+                      delete_request, bundle=SECURITYD_BUNDLE)

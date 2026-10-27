@@ -85,6 +85,11 @@ class CloudKitRecord:
     record_name: str        # identifier value name (usually a UUID)
     type: str               # "item" / "synckey" / "tlkshare" / "currentitem" / ...
     fields: dict            # {field_name: python value}
+    etag: str = ""          # server change tag - the conflict guard for a save
+    # Wire bytes as received, so a save re-sends identifier, zone and untouched fields verbatim
+    # instead of re-encoding them: {"id": RecordIdentifier, "type": Record.Type,
+    # "fields": [(name, Record.Field bytes), ...] in received order}.
+    raw: dict = dataclasses.field(default_factory=dict, repr=False)
 
     def get_bytes(self, name: str) -> bytes | None:
         v = self.fields.get(name)
@@ -131,7 +136,7 @@ def parse_record(raw: bytes) -> CloudKitRecord:
             name = first_str(decode_fields(idval), 1) or ""
     type_blob = first(f, 3)
     rtype = first_str(decode_fields(type_blob), 1) if type_blob is not None else ""
-    fields = {}
+    fields, raw_fields = {}, []
     for fld in f.get(7, []):
         ff = decode_fields(fld)
         ident = first(ff, 1)
@@ -139,7 +144,120 @@ def parse_record(raw: bytes) -> CloudKitRecord:
         val = first(ff, 2)
         if fname is not None and val is not None:
             fields[fname] = _parse_value(val)
-    return CloudKitRecord(record_name=name, type=rtype or "", fields=fields)
+            raw_fields.append((fname, fld))
+    return CloudKitRecord(record_name=name, type=rtype or "", fields=fields,
+                          etag=first_str(f, 1) or "",
+                          raw={"id": rec_id, "type": type_blob, "fields": raw_fields})
+
+
+# --- writing (RecordSave, op 210) -----------------------------------------------------------
+# Layout from Laky-64/appleservices (MIT, cloudkit/recordsave.go + ckks/encode.go) and the
+# CloudKit proto in OpenBubbles/rustpush (facts only, SSPL): RecordSaveRequest{record=1, etag=4,
+# saveSemantics=6}; saveSemantics 2 = insert, 3 = update (with the etag as the conflict guard).
+OP_TYPE_RECORD_SAVE = 210
+FIELD_RECORD_SAVE = 210
+SAVE_SEMANTICS_INSERT = 2
+SAVE_SEMANTICS_UPDATE = 3
+# RecordDeleteRequest{recordIdentifier=1, etag=2} at /record/delete (op 214).
+OP_TYPE_RECORD_DELETE = 214
+FIELD_RECORD_DELETE = 214
+VALUE_TYPE_BYTES = 1
+VALUE_TYPE_STRING = 3
+VALUE_TYPE_INT64 = 7
+
+
+def encode_int_value(value: int) -> bytes:
+    return Writer().uint64(1, VALUE_TYPE_INT64).uint64(4, value).finish()
+
+
+def encode_bytes_value(value: bytes) -> bytes:
+    return Writer().uint64(1, VALUE_TYPE_BYTES).bytes(2, value).finish()
+
+
+def encode_string_value(value: str) -> bytes:
+    return Writer().uint64(1, VALUE_TYPE_STRING).string(7, value).finish()
+
+
+def _field(name: str, value: bytes) -> bytes:
+    return Writer().message(1, Writer().string(1, name).finish()).message(2, value).finish()
+
+
+def build_update_record(record: CloudKitRecord, replace: dict) -> bytes:
+    """Record bytes for saving `record` with the field values in `replace` ({name: encoded
+    Value}) swapped in. Everything else - identifier with its zone, type and every other field -
+    goes back byte for byte as fetched. Only replaces fields the record already has."""
+    if not record.raw.get("id") or not record.raw.get("type"):
+        raise ValueError("record was not fetched with its wire bytes")
+    unknown = set(replace) - {n for n, _ in record.raw["fields"]}
+    if unknown:
+        raise ValueError(f"record has no field(s) {sorted(unknown)}")
+    w = Writer().message(2, record.raw["id"]).message(3, record.raw["type"])
+    for name, fld in record.raw["fields"]:
+        w.message(7, _field(name, replace[name]) if name in replace else fld)
+    return w.finish()
+
+
+def _renamed_id(raw_id: bytes, new_name: str) -> bytes:
+    """RecordIdentifier with a new record name, zone identifier kept byte for byte."""
+    f = decode_fields(raw_id)
+    w = Writer().message(1, Writer().string(1, new_name).uint64(2, 1).finish())  # type RECORD
+    for zid in f.get(2, []):
+        w.message(2, zid)
+    return w.finish()
+
+
+def build_insert_record(template: CloudKitRecord, new_name: str, replace: dict) -> bytes:
+    """A new record next to `template` (same zone, type and field layout) under `new_name`.
+    `replace` must carry the new `data`/`wrappedkey`; server-managed `server_*` fields start
+    at 0 like a fresh upload (appleservices does the same)."""
+    if not template.raw.get("id") or not template.raw.get("type"):
+        raise ValueError("template was not fetched with its wire bytes")
+    if not {"data", "wrappedkey"} <= set(replace):
+        raise ValueError("an insert needs new data + wrappedkey")
+    w = (Writer().message(2, _renamed_id(template.raw["id"], new_name))
+         .message(3, template.raw["type"]))
+    for name, fld in template.raw["fields"]:
+        if name in replace:
+            w.message(7, _field(name, replace[name]))
+        elif name.startswith("server_"):
+            w.message(7, _field(name, encode_int_value(0)))
+        else:
+            w.message(7, fld)
+    return w.finish()
+
+
+def build_insert_request(record_bytes: bytes) -> bytes:
+    """RecordSaveRequest for a new record (no etag: the server refuses if the name exists)."""
+    return Writer().message(1, record_bytes).uint64(6, SAVE_SEMANTICS_INSERT).finish()
+
+
+def build_delete_request(record: CloudKitRecord) -> bytes:
+    """RecordDeleteRequest for `record` as fetched. The etag is mandatory: a newer version from
+    another device makes the delete fail instead of removing it."""
+    if not record.etag or not record.raw.get("id"):
+        raise ValueError("refusing to delete without etag / identifier")
+    return Writer().message(1, record.raw["id"]).string(2, record.etag).finish()
+
+
+def build_save_request(record_bytes: bytes, etag: str) -> bytes:
+    """RecordSaveRequest for an update. An etag is mandatory: without it the server would
+    overwrite a newer version from another device."""
+    if not etag:
+        raise ValueError("refusing to save without an etag")
+    return (Writer().message(1, record_bytes).string(4, etag)
+            .uint64(6, SAVE_SEMANTICS_UPDATE).finish())
+
+
+def parse_save_response(raw: bytes) -> str:
+    """RecordSaveResponse -> the record's new etag ("" if the server sent none). The proto names
+    serverFields(4) = Record{etag=1}; appleservices reads a bare string at 2 - accept both."""
+    f = decode_fields(raw)
+    server_fields = first(f, 4)
+    if server_fields is not None:
+        etag = first_str(decode_fields(server_fields), 1)
+        if etag:
+            return etag
+    return first_str(f, 2) or ""
 
 
 def parse_retrieve_changes_response(raw: bytes) -> dict:

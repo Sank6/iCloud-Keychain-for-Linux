@@ -8,8 +8,9 @@ reverse engineering attempt and **is not affiliated with Apple in any way**.
 
 > **Note:** Most of this project was written with AI assistance (and reviewed by a human).
 > It works with my own Apple account, but that's no guarantee it will work with yours.
-> Your passwords never leave your computer, and nothing is ever changed in your Apple
-> account - `icp` only reads.
+> Your passwords never leave your computer, and by default nothing is changed in your Apple
+> account - `icp` only reads. The one exception is the experimental `icp edit` (see
+> [Editing logins](#editing-logins-experimental)), which writes only when you add `--apply`.
 
 > This is also **untested** with Advanced Data Protection enabled. Any help with this will be appreciated -
 > let me know if you have any issues with ADP enabled (also lmk if it works). Please don't spam escrow attempts!
@@ -138,6 +139,63 @@ if your sign-in has expired they stop and wait for `icp login`. `icp status` sho
 Shared password groups you created in the Passwords app are synced too; groups someone else
 shared with you are not yet.
 
+## Editing logins (experimental)
+
+`icp` can also change an existing login and save it back to iCloud Keychain, so the change shows
+up on your iPhone and Mac. This is **opt-in per command**: every edit is a dry run that prints
+what would change, and only `--apply` sends it. Treat it as experimental - it has been checked
+against one real account, not many.
+
+```
+icp edit example.com anna --add-site shop.example.com              # dry run: shows the diff
+icp edit example.com anna --add-site shop.example.com --apply      # saves it
+icp edit example.com anna --password-stdin --apply                 # new password (prompted)
+icp edit example.com anna --stdin-json --apply < changes.json      # {"notes": ..., "totp": ...}
+icp edit example.com anna --site example.org --apply               # new primary website (rekey)
+icp edit example.com anna --delete --apply                         # move to Recently Deleted
+```
+
+What can be changed: the password, the primary website (`--site`), the username
+(`--new-username`), extra websites (`--add-site` / `--remove-site`), the title, the notes and the
+verification code (`totp`: an `otpauth://totp` URI or a base32 setup key, `""` removes it).
+`--delete` moves the login and its metadata to **Recently Deleted**, like the Passwords app does,
+so it can be recovered on any device. When several logins share website and username (http vs
+https, another port or path), pick one with `--uuid` (the `uuid` the vault stores per login).
+Title, notes, extra websites and codes live in the login's Passwords-app metadata; a login that
+has none yet must be edited once in the Passwords app first. Secrets (password, notes, code) are
+best passed via `--password-stdin` or `--stdin-json`, never as arguments. Logins in shared groups
+stay read-only, and new logins cannot be created.
+
+**Safety model.** Each rule is enforced in `icp/keychain/write.py`, not by the caller:
+
+- Dry run by default; `--apply` per command.
+- Every update and delete carries the record's *etag* from a fetch moments before - if another
+  device changed the login in between, Apple refuses the write instead of overwriting it.
+- Only entries encrypted with the current class key are written; the re-encrypted record is
+  decrypted again locally and compared with the edit before anything is sent.
+- Each record is backed up (encrypted, in `~/.config/icp/backup/`) before it is changed or
+  deleted. `icp restore <uuid> --apply` puts that version back; the uuids are printed after an
+  edit (`backups` in `--json`).
+- Writes are paced (10 s between edits, at most 30 writes an hour). Any failed write blocks all
+  further writes until you have looked at it: `icp write-state` shows the state,
+  `icp write-state --clear` lifts the block.
+- Keys, zones and anything outside your own `Passwords`/`Manatee` logins are never touched.
+
+**Why changing the website or username creates a new entry.** Website and username are part of a
+keychain item's primary key. Apple devices apply an incoming change by primary key only
+(`CKKSIncomingQueueOperation` -> `SecDbItemInsertOrReplace` in Apple's Security code), so an
+in-place change of either leaves the old row next to the new one on the device (observed on
+iOS 27). `icp` therefore *rekeys*: it inserts the login (and its metadata) under
+new record ids, reads them back from iCloud, and only then deletes the old records. If anything
+fails before the delete you get a duplicate, never a lost password. A rekey refuses a target
+website/username that another login already uses.
+
+**Risks.** This writes to your real keychain with a protocol Apple does not document. A bug or an
+unexpected server change could corrupt or duplicate an entry on all your devices. Try it on a
+throwaway login first, and keep `icp diag write` (record shapes, no values) handy if something
+looks off. `icp restore` puts back one record at a time; after a rekey, restore both the login and
+its metadata and delete the new entry on a device.
+
 ## All commands
 
 ```
@@ -145,7 +203,10 @@ login    sign in, join your iCloud Keychain, and download your passwords
 show     browse and search your passwords and Hide My Email addresses
 sync     refresh your passwords now (--background for unattended runs, --force)
 status   last sync, next allowed sync, whether a login is needed (--json)
-diag     read-only diagnostics: zones, groups (counts only, no secrets)
+diag     read-only diagnostics: zones, groups, write (shapes/counts only, no secrets)
+edit     change one login - dry run unless --apply (experimental, see above)
+restore  put a backed-up record back after an edit (dry run unless --apply)
+write-state  edit pacing and block state (--clear lifts a block after an error)
 logout   sign out (use --wipe-device to also forget this device)
 ```
 
@@ -156,5 +217,7 @@ The keychain decryption, Octagon trust join, and CloudKit transport follow
 [OpenBubbles/rustpush](https://github.com/OpenBubbles/rustpush), cross-checked against
 [Apple's open-source Security code](https://github.com/apple-oss-distributions/Security). Hide My
 Email is ported from [dedoussis's browser extension](https://github.com/dedoussis/icloud-hide-my-email-browser-extension).
+The record save/delete layout and the Passwords-metadata format used by `icp edit` follow
+[Laky-64/appleservices](https://github.com/Laky-64/appleservices) (MIT).
 Machine data is provided by the SideStore ecosystem's `anisette-v3-server`. See `RESEARCH.md` for
 how it all works.

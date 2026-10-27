@@ -2,7 +2,7 @@
 
 Notes on the Apple APIs: how a non-Apple-hardware client authenticates as
 a device, joins the account's Octagon trust, and decrypts the iCloud Keychain - including the
-Passwords-app web logins.
+Passwords-app web logins - and how `icp edit` writes a changed login back (last section).
 
 Primary reference throughout is [OpenBubbles/rustpush](https://github.com/OpenBubbles/rustpush)
 (`src/icloud/*.rs`), cross-checked against
@@ -347,9 +347,11 @@ ctxt   {<profile>: {lUsed: <float>}}                PASSWORD (str), id: uuid,
        timestamp)
 ```
 
-`icp` merges `notes`, `title`, `totp` and the nested `lUsed` (as `Credential.last_used`, which
-drives recency ordering - `mdat` is only the record's *write* time). Everything else is dropped;
-`s_hi` deliberately so, since it would put cleartext passwords in the vault.
+`icp` merges `notes`, `title`, `totp`, `s_as` and the nested `lUsed` (as `Credential.last_used`,
+which drives recency ordering - `mdat` is only the record's *write* time). `s_as` holds the
+login's extra websites as `[{"s": "<host>"}]` (bare hosts, no scheme); the autofill match tries
+them after the primary `srvr`. Everything else is dropped; `s_hi` deliberately so, since it
+would put cleartext passwords in the vault.
 
 **The per-site `website-metadata` record is a separate payload** and shares none of the keys
 above - breach-notification and passkey-endpoint state, keyed by site with no `acct`:
@@ -493,3 +495,59 @@ and are tagged with the group name (`Credential.group`).
 Provenance: container/zone names, op numbers and the PCS layout were learned from the public
 OpenBubbles `rustpush` sources (SSPL). Only facts about Apple's format were taken; the Python
 here is an independent implementation - no rustpush code was copied.
+
+## Writing (RecordSave / RecordDelete)
+
+`icp edit` (`icp/keychain/write.py`, transport in `transport/ckks.py` + `cloudkit.py`) changes an
+existing login in the `Passwords`/`Manatee` CKKS zones. Same CKDatabase endpoint family and
+`com.apple.securityd` bundle as the record fetch:
+
+- **Save**: `POST /ckdatabase/api/client/record/save`, operation type **210**, request in
+  `RequestOperation` field 210: `RecordSaveRequest{record=1, etag=4, saveSemantics=6}`.
+  `saveSemantics` **2 = insert** (no etag; fails if the name exists), **3 = update** (etag
+  required - a stale etag fails instead of overwriting another device's newer version). The
+  response carries the new etag (`serverFields(4) = Record{etag=1}`; appleservices reads a bare
+  string at 2 - both are accepted).
+- **Delete**: `POST /ckdatabase/api/client/record/delete`, operation type **214**,
+  `RecordDeleteRequest{recordIdentifier=1, etag=2}`. `icp` never deletes without an etag.
+- **Errors**: `Result{code=1, error=2}`, `Error{client=1 {code=1}, errorDescription=4}`. The client
+  code is the useful part (e.g. 9 = exists, 15 = oplock / etag mismatch); it is kept on
+  `CloudKitError.client_code`.
+- The record is re-sent **byte for byte as fetched** (`Record{etag=1, recordIdentifier=2,
+  type=3, fields=7}`), with only `data` and `wrappedkey` swapped in; zone identifier, `parentkeyref`,
+  `gen`, `encver`, `uploadver` etc. go back unchanged. An insert copies a sibling record's
+  layout under a new name with the `server_*` fields set to 0.
+
+Item encryption is the inverse of Stage 5:
+
+- A **fresh 64-byte item key per upload**, AES-SIV-wrapped with the record's class key ->
+  `wrappedkey` (base64). Only the class key that `currentkey` points to is used; an item under a
+  rotated (older) class key is refused.
+- `data = randomIV(16) || SIV(item key, padded plist)` with the **same AAD** as for decryption
+  (record name, `encver`, `gen`, parent key and the other authenticated fields) - an update does
+  not change any of them, so a backed-up old ciphertext stays valid and can be put back.
+- Padding: `0x80` then zeros up to a multiple of **20 bytes, at least two blocks**
+  (`CKKSItemEncrypter`).
+- The item's `sha1` attribute is dropped (receivers recompute it; a stale one would mismatch) and
+  `mdat` is set to now.
+- For a new record the item's **`UUID` attribute equals the record name** (true for every login
+  and sidecar seen); an insert sets both to the same fresh uppercase UUID.
+- Metadata sidecar payload: `s_as` = `[{"s": "<host>"}]`; `notes`/`title` keep their stored type
+  (bytes). A written `totp` block uses `algorithm 0` (SHA1, the only value observed) and
+  `_initialDate` 1970 as the Passwords app leaves it.
+
+**Primary-key reconcile.** Website (`srvr`) and username (`acct`) are part of an `inet` item's
+primary key. A device applies an incoming modify by primary key only
+(`CKKSIncomingQueueOperation` -> `SecDbItemInsertOrReplace`): it does not look the old row up by
+UUID. Observed on iOS 27 (2026-10-20): an in-place update that changed `srvr` left a stale row
+for the old website on the iPhone next to the new one. A **rekey** fixed it: insert login and
+sidecar under new UUIDs, read both back from the server and compare, then delete the old
+records (with their etags) - the delete removed both stale rows with that UUID on the iPhone.
+`icp` refuses a rekey onto a website/username that another login already uses, since a device
+would keep only one of the two items.
+
+Provenance: the save/delete request layout, the item encoding and the Passwords-metadata
+format were learned from [Laky-64/appleservices](https://github.com/Laky-64/appleservices) (MIT:
+`cloudkit/recordsave.go`, `ckks/encode.go`, `keychain/webpassword*.go`); the proto field numbers
+were cross-checked against the OpenBubbles `rustpush` sources (SSPL, facts only). The Python here
+is an independent implementation - no code was copied from either.
