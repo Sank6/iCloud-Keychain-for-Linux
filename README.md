@@ -6,12 +6,7 @@ private, encrypted store on your machine. A browser extension fills them in for 
 Passwords app on a Mac or iPhone. Your Hide My Email addresses show up too. This project is a 
 reverse engineering attempt and **is not affiliated with Apple in any way**.
 
-> **Note:** Most of this project was written with AI assistance (and reviewed by a human).
-> It works with my own Apple account, but that's no guarantee it will work with yours.
-> Your passwords never leave your computer, and nothing is ever changed in your Apple
-> account - `icp` only reads.
-
-> This is also **untested** with Advanced Data Protection enabled. Any help with this will be appreciated -
+> This is **untested** with Advanced Data Protection enabled. Any help with this will be appreciated -
 > let me know if you have any issues with ADP enabled (also lmk if it works). Please don't spam escrow attempts!
 
 ## What you'll need

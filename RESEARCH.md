@@ -17,8 +17,8 @@ Two ways to reach iCloud exist; only one can decrypt the keychain:
   reaches CloudKit/Drive - but a web session cannot join the keychain SOS/Octagon circle, so
   it dead-ends before decryption.
 - Native GSA device (this project): GrandSlam SRP-6a login -> device trust -> CloudKit ->
-  Octagon join. The only path that can reach the keychain. Subsequent logins don't re-prompt 2FA
-  because Apple sees a stable, trusted device.
+  Octagon join. This is the path used here to reach the keychain. A stable device identity
+  helps retain trust, but Apple can require 2FA again when signing in.
 
 ## Stage 1 - Auth & tokens (GSA -> mmeAuthToken -> CloudKit)
 
@@ -27,29 +27,25 @@ GrandSlam SRP-6a login (`gsa.apple.com`) yields a decrypted `spd` containing the
 SRP implementation is adapted from
 [JJTech0130's GrandSlam gist](https://gist.github.com/JJTech0130/049716196f5f1751b8944d93e73d3452).
 
-- `com.apple.gs.idms.pet` is a short-lived, password-equivalent token: it is fed back into
-  the SRP flow as the password, not used as a service bearer token. Sending the PET to
-  `setup.icloud.com` as `Basic dsid:PET` returns the generic `status 1`. The longer-lived GS
-  `com.apple.gs.icloud.auth` settings token only authorizes Apple-ID settings/terms, not
-  CloudKit.
-- Token lifetimes (all Apple-side, adjustable without notice): the PET is single-use (spent
-  once for `mmeAuthToken`), so its own TTL never gates a login. `mmeAuthToken` is the
-  persistent credential - Apple caps sync-scoped tokens at ~2 months, so the password is re-entered that often, never re-2FA: the stable `X-Mme-Device-Id` keeps the device
-  trusted months-to-indefinitely. Refresh can even be silent - rustpush re-mints every 7 days
-  from a stored password.
-  - [pyicloud](https://github.com/picklepete/pyicloud/blob/master/README.rst) /
-  [icloudpd](https://icloud-photos-downloader.github.io/icloud_photos_downloader/authentication.html)
-  (~2-month cap)
-  - [ElcomSoft](https://blog.elcomsoft.com/2017/11/icloud-authentication-tokens-inside-out/)
-  (sync tokens don't expire)
-  - [Apple](https://support.apple.com/en-us/122621) (device trust),
-  - [rustpush](https://github.com/OpenBubbles/rustpush/blob/master/src/auth.rs) (7-day silent refresh).
+- `com.apple.gs.idms.pet` is exchanged at `loginDelegates` using `Basic apple-id:PET`;
+  escrow gets a fresh PET. This short-lived token is not fed back through SRP or used for CloudKit.
+- Since `6ce0325`, GSA, iCloud setup, escrow and CloudKit use the Windows client-info prefix
+  `<PC> <Windows;6.2(0,0);9200>`, with service-specific suffixes (GSA uses AuthKit/akd).
+  This supersedes the earlier macOS GSA fixes; CloudKit protobuf device fields and the
+  Octagon peer still use Mac defaults. The akd/iCloudHelper User-Agent strings remain Darwin-based.
+- GSA `Status.hsc == 409` without `au` means a code was pushed: validate without another trigger.
+  `trustedDeviceSecondaryAuth` triggers a device code; `secondaryAuth` triggers SMS. Validation
+  rejects plist `ec` errors even on HTTP 200, then re-authenticates after success for the PET.
+- Sync refreshes `cloudKitToken` using `mmeAuthToken`; renewal follows rejection, not a fixed TTL.
+  HTTP 401 or `ErrorID=UNAUTHORIZED` allows saved-password recovery outside `sync --background`;
+  background sync stops for login. HTTP 429/5xx back off. Noninteractive GSA requests no extra
+  code, but SRP can itself push one, so background sync disables GSA password sign-in entirely.
 - Reaching CloudKit is a multi-hop chain, each hop with a specific auth scheme:
 
 ```
 GSA SRP login --(PET, fresh)--> loginDelegates --> mmeAuthToken (+ 9 service tokens)
 mmeAuthToken --> get_account_settings --> webservices URL map + cloudKitToken
-cloudKitToken --> ckAppInit --> cloudKitUserId --> CloudKit / CKCode
+mmeAuthToken --> ckAppInit --> cloudKitUserId; cloudKitUserId + cloudKitToken --> CloudKit / CKCode
 ```
 
 ### Hop 1 - loginDelegates
@@ -69,8 +65,8 @@ body     {
 ```
 
 Returns numeric `dsid` + `service-data.tokens.{mmeAuthToken, cloudKitToken, mmeFMIPToken,
-searchPartyToken, keyTransparencyToken, ...}`. `mmeAuthToken` is persistent (survives reboot, no
-re-2FA).
+searchPartyToken, keyTransparencyToken, ...}`. `mmeAuthToken` is stored encrypted across reboots;
+using an accepted token needs no 2FA, but a later password sign-in may require it.
 
 ### Hop 2 - get_account_settings
 
@@ -99,6 +95,12 @@ auth     Basic base64(dsid : mmeAuthToken)
 
 CloudKit's `x-cloudkit-userid` is the per-container `cloudKitUserId` this call returns (not the dsid).
 
+`ratelimit.py` persists sync pacing in `state.json`: a five-minute minimum interval by default,
+exponential backoff from five minutes to six hours, and numeric `Retry-After` capped at six hours.
+`--force` bypasses pacing but cannot bypass a background `needs_login` stop; `icp login` clears it.
+Skipped syncs (busy, too early, or already blocked for background login) exit 75; failures exit 1.
+`icp status [--json]` reports this local state without network access.
+
 ## Stage 2 - Transport (CloudKit CKCode + CKKS records)
 
 All Cuttlefish (Octagon) RPCs ride CloudKit CKCode function invocations, not raw REST.
@@ -112,7 +114,7 @@ GSA+2FA -> trusted) plus a voucher, not on attestation.
 
 ```
 POST     gateway.icloud.com/ckcoderouter/api/client/code/invoke
-auth     Header.userToken = cloudKitToken
+auth     x-cloudkit-authtoken = cloudKitToken (RequestOperation.Header.userToken stays empty)
 headers  x-cloudkit-{bundleid, containerid, databasescope=PRIVATE, environment=Production,
                      userid, authtoken}
          x-cloudkit-functionroutinghint = Cuttlefish/<op>
@@ -134,7 +136,7 @@ body     gzip( uleb128(len) ++ RequestOperation )
 ("Passwords", "Manatee", ...), fetched with a RecordRetrieveChanges op (type 213) per zone:
 
 ```
-POST     {partition}-ckdatabase.icloud.com/ckdatabase/api/client/record/sync
+POST     gateway.icloud.com/ckdatabase/api/client/record/sync
 ```
 
 Same transport, securityd bundle id. Record types: `tlkshare` (ECIES blob), `synckey` (class key
@@ -192,8 +194,8 @@ unit-test vector (the peerID hash below, from
   19  supportsRepudiation
   ```
   A standard-protection account leaves recovery/secureElement/walrus/webAccess/custodian unset;
-  the frozen/flexible policy version+hash are the current builtin Octagon policy (a constant from
-  `fetchPolicyDocuments`).
+  the frozen/flexible policy versions and hashes are pinned constants in `octagon/client.py`,
+  not fetched dynamically with `fetchPolicyDocuments`.
 - `dynamicInfo` = `TPPBPeerDynamicInfo` (the mutable trust graph):
   ```
   1  clock
@@ -203,8 +205,8 @@ unit-test vector (the peerID hash below, from
   ```
   A joining peer lists itself + the sponsor's trusted peers in `included`.
 
-Residual unknowns, both inside data we sign and confirmable on a live join: `mungeModelID` body
-(pass-through on production builds), and whether SecurityFoundation's ECDSA encoding is DER/X9.62.
+The implementation passes model IDs through `munge_model_id` and emits DER/X9.62 ECDSA signatures
+via `cryptography`; these are the encodings used to build join requests.
 
 ## Stage 4 - Joining the trust (escrow recovery -> voucher)
 
@@ -349,7 +351,7 @@ ctxt   {<profile>: {lUsed: <float>}}                PASSWORD (str), id: uuid,
 
 `icp` merges `notes`, `title`, `totp` and the nested `lUsed` (as `Credential.last_used`, which
 drives recency ordering - `mdat` is only the record's *write* time). Everything else is dropped;
-`s_hi` deliberately so, since it would put cleartext passwords in the vault.
+`s_hi` deliberately so, to avoid retaining historical passwords alongside the current credential.
 
 **The per-site `website-metadata` record is a separate payload** and shares none of the keys
 above - breach-notification and passkey-endpoint state, keyed by site with no `acct`:
@@ -406,7 +408,7 @@ iCloud+ Hide My Email aliases are not Keychain items - a full CKKS sync across e
 decrypts cleanly with zero alias data. They live behind the `premiummailsettings` webservice,
 which never appears in the device path's `get_account_settings` map - only in a web session's
 `accountLogin` response. That web session is the "Web/appleauth" path above (unable to join
-Octagon); `icp` runs it as a second, parallel auth surface.
+Octagon); `icp` uses it separately, attempting alias refresh at most daily from `sync`, without prompts.
 
 idmsa web-session login is SRP-6a. The older pyicloud `{accountName, password}` one-shot POST
 to `/signin` no longer works: a live attempt returns a generic HTTP 503 regardless of
@@ -427,11 +429,9 @@ response headers (`X-Apple-ID-Session-Id`, `scnt`, `X-Apple-Session-Token`,
 `X-Apple-TwoSV-Trust-Token`) plus cookies; `frame_tag` is a random `auth-<uuid>` threaded through
 `X-Apple-OAuth-State`/`X-Apple-Frame-Id`; `WIDGET_KEY` is a fixed public constant.
 
-The 409 no longer auto-sends the 2FA push. Apple's backend used to auto-trigger the push on
-the `409` from `signin/complete`; a recent change ([rclone](https://github.com/rclone/rclone)'s
-`iclouddrive` backend dates it to
-"iOS 26.4+") means the client must now explicitly request it via
-`PUT verify/trusteddevice/securitycode` before prompting for the code.
+For this web flow, `icp` explicitly requests the push after `signin/complete` returns 409:
+`PUT verify/trusteddevice/securitycode` runs before the interactive code prompt. This is
+distinct from GSA's already-pushed-code case above; noninteractive web login stops at the challenge.
 
 The alias API (`hme/client.py`, ported from
 [dedoussis/icloud-hide-my-email-browser-extension](https://github.com/dedoussis/icloud-hide-my-email-browser-extension))
@@ -487,8 +487,8 @@ Decryption chain (`icp/sharing/pcs.py`, `groups.py`):
    `cloudkit.share.displayName` decrypts to `EncryptedValue{stringValue=6}` - the group name.
 
 The items carry the same access groups as the private keychain (`com.apple.cfnetwork` logins,
-`com.apple.password-manager` sidecars), so they go through `CredentialStore.from_items` unchanged
-and are tagged with the group name (`Credential.group`).
+`com.apple.password-manager` sidecars), and pass through `CredentialStore.from_items` per group.
+`Credential.group` holds its name or ID; unreadable groups are skipped while private sync continues.
 
 Provenance: container/zone names, op numbers and the PCS layout were learned from the public
 OpenBubbles `rustpush` sources (SSPL). Only facts about Apple's format were taken; the Python
