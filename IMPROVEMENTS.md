@@ -407,3 +407,9 @@ Not started; needs your go-ahead (it means downloading Apple's installer).
 - **Plan with go/no-go gates:** (1) Wine present and installer runs, (2) sign-in under Wine,
   (3) host answers a lookup, (4) relay shim. Cheapest useful variant: use Wine only to obtain
   anisette. Emulating just the needed Windows calls without Wine is not recommended.
+
+### Sync retry result (after the merge)
+`GSA init failed: HTTP 403: non-plist reply (146 bytes)`. Apple refuses the very first sign-in
+request, before any password is checked, so this is about how the request looks (client identity
+or anisette data), not about your credentials. Background syncs are now stopped (`needs_login`).
+This is the strongest argument for getting real anisette (see the Wine option above).
