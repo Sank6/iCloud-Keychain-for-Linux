@@ -413,3 +413,21 @@ Not started; needs your go-ahead (it means downloading Apple's installer).
 request, before any password is checked, so this is about how the request looks (client identity
 or anisette data), not about your credentials. Background syncs are now stopped (`needs_login`).
 This is the strongest argument for getting real anisette (see the Wine option above).
+
+## Official Apple extension support (this round)
+
+Status: **works end to end in a throwaway headless Helium profile; not yet tried in your real profile.**
+
+- Protocol read from the installed extension v3.4.0 and written up in `docs/apple-extension-protocol.md`.
+- Host implemented in Python (`icp/applehost.py` crypto, `icp/applehost_main.py` message loop,
+  `icp/applehost_install.py` manifest + patcher). Tested against Apple's own `SecretSession` code run
+  under node (`tests/test_applehost.py`, `tests/ext/apple_client.js`), including 60 random pairings for
+  key-derivation edge cases and wrong-PIN/lockout/read-only behaviour.
+- Verified in the throwaway profile with Apple's real extension: pair with PIN -> list logins -> fill
+  password (only lengths were printed).
+- **Blocker found: the official extension refuses to run on Linux** (OS gate in `checkForValidOS`). A
+  Linux user needs a local copy with that one check removed (`patch-extension`), loaded unpacked, with
+  the store version turned off (same ID). The alternative, spoofing a Windows user agent for the whole
+  browser, was rejected.
+- Not done: Rust port of the host (Python for now; the Rust agent still serves lookups), TOTP over this
+  protocol, PROTO 1 proofs, `icp setup` integration, and trying it in your real Helium profile.

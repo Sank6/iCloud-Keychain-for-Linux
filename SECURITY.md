@@ -43,3 +43,19 @@ browser extension. This file says what that does and does not protect against.
 - The README warns that ~10 wrong passcode entries permanently lock keychain recovery; nothing
   here retries escrow/passcode attempts automatically.
 - Failed sign-ins back off exponentially (15 min doubling, 24 h cap) instead of hammering Apple.
+
+## Apple-extension host (`com.apple.passwordmanager`)
+
+- **Pairing PIN**: a fresh random 6-digit PIN per pairing attempt, from the OS CSPRNG, shown only in a
+  desktop notification. It is never logged or written to disk by the host. It is the SRP password, so
+  it never crosses the pipe; a wrong PIN fails the AES-GCM check.
+- **Guessing**: after 3 wrong PINs the host refuses new pairings for 10 minutes (per host process).
+  A 6-digit PIN is guessable offline only by someone who can already read the browser<->host pipe,
+  i.e. code running as you; the same attacker could ask the agent directly.
+- **Sessions**: keys live only in the host process memory, are dropped on `Hello`/cancel/failure, expire
+  after 8 hours and are not persisted, so every browser start re-pairs.
+- **Scope**: read-only. Save/update/TOTP requests are ignored. Lookups reuse the agent, so they obey
+  its lock state and idle lock.
+- **Patched extension copy**: required on Linux because Apple's extension refuses to start (OS gate).
+  The copy is built locally from your own installed extension and is not auto-updated; re-run
+  `python -m icp.applehost_install patch-extension` after an update. Only the OS check is changed.
