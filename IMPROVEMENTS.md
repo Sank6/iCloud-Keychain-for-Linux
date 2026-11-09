@@ -393,3 +393,17 @@ versions and maintenance before depending on them.)
 - libadwaita-rs: https://lib.rs/crates/libadwaita
 - Apple, autofill iCloud passwords in a browser on Windows: https://support.apple.com/guide/icloud-windows/icw76039ec0f
 - Chrome Web Store, iCloud Passwords: https://chromewebstore.google.com/detail/icloud-passwords/pejdijmoenmkgeppbflobdenhhabjlaj
+
+
+## Option under evaluation: Apple's Windows client under Wine
+
+Not started; needs your go-ahead (it means downloading Apple's installer).
+
+- **Idea:** run Apple's own iCloud Passwords host under Wine and relay the browser extension's
+  native messages to it through a small Linux shim, as a backend alongside this client.
+- **Gains:** save/update support, Apple's real device identity (lowest ban risk), real anisette.
+- **Costs:** closed source, Windows-only; no Secret Service / GNOME integration; the protocol is
+  per-URL lookup, so it probably cannot feed the GTK app or keyring mirror; fragile on updates.
+- **Plan with go/no-go gates:** (1) Wine present and installer runs, (2) sign-in under Wine,
+  (3) host answers a lookup, (4) relay shim. Cheapest useful variant: use Wine only to obtain
+  anisette. Emulating just the needed Windows calls without Wine is not recommended.
