@@ -34,6 +34,7 @@ class Credential:
     notes: str = ""
     last_used: float = 0.0
     totp: str = ""
+    group: str = ""  # Empty for the user's keychain.
 
     @property
     def recency(self) -> float:
@@ -42,7 +43,8 @@ class Credential:
     def public_dict(self) -> dict:
         return {"domain": self.domain, "username": self.username,
                 "password": self.password, "title": self.title, "mdat": self.mdat,
-                "notes": self.notes, "last_used": self.last_used, "totp": self.totp}
+                "notes": self.notes, "last_used": self.last_used, "totp": self.totp,
+                "group": self.group}
 
     def wire_dict(self) -> dict:
         """The extension's view: the `totp` URI is replaced by a code generated now."""
@@ -445,7 +447,7 @@ def _maybe_trigger_sync() -> None:
             return
         attempt.touch()
         subprocess.Popen(
-            [sys.executable, "-m", "icp.cli.app", "sync"],
+            [sys.executable, "-m", "icp.cli.app", "sync", "--background"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True,
         )

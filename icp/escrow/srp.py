@@ -177,7 +177,7 @@ class EscrowRecovery:
 
     # escrowproxy wants the sbd UA + a fixed X-Mme-Client-Info that overwrites anisette's.
     ESCROW_USER_AGENT = "com.apple.sbd/638.100.48 com.apple.iCloudHelper/282"
-    ESCROW_MME_CLIENT_INFO = ("<MacBookPro18,3> <macOS;13.4.1;22F8> "
+    ESCROW_MME_CLIENT_INFO = ("<PC> <Windows;6.2(0,0);9200> "
                               "<com.apple.AuthKit/1 (com.apple.sbd/638.100.48)>")
 
     def __init__(self, host: str, email: str, pet: str, anisette, *, timeout: int = 30):

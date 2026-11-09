@@ -12,6 +12,8 @@ import sys
 import time
 import uuid
 from datetime import datetime, timezone
+import shutil
+import subprocess
 
 from . import ui
 from .. import diag
@@ -20,7 +22,10 @@ from ..auth.anisette import Anisette, AnisetteError
 from ..auth.device import Device
 from ..auth.gsa import GSAClient, GSAError
 from ..auth.session import SessionError
+from ..octagon import client as octagon
+from ..octagon.client import OctagonError
 from ..totp import generate as totp_generate
+from ..transport.cloudkit import CloudKitError
 
 ICLOUD_AUTH_TOKEN = "com.apple.gs.icloud.auth"
 
@@ -80,7 +85,7 @@ def _refresh_webservices(s: dict, device, anisette, log=None, debug=False) -> in
     if debug and log is not None:
         diag.dump(log, "account-settings response", data)
     if status == 401 or data.get("ErrorID") == "UNAUTHORIZED":
-        raise icloud.ICloudError(
+        raise icloud.ICloudAuthExpired(
             f"iCloud credentials expired ({data.get('description') or 'unauthorized'}) - "
             "run `icp login` to re-authenticate")
     if data.get("status") not in (0, None):
@@ -96,12 +101,12 @@ def _refresh_webservices(s: dict, device, anisette, log=None, debug=False) -> in
 
 
 def _mint_tokens(record: dict, username: str, password: str, device, anisette,
-                 *, twofa=_twofa_prompt, log=None, debug=False) -> None:
+                 *, twofa=_twofa_prompt, log=None, debug=False, interactive: bool = True) -> None:
     """SRP login with the password, then exchange the fresh 5-min PET for a new ~7-day
     mmeAuthToken; update `record`'s token fields in place. Preserves any already-cached
     cloudKitUserId (so a re-auth need not re-run ckAppInit). Raises on failure."""
     gsa = GSAClient(device, anisette)
-    spd = auth.authenticate(gsa, username, password, twofa)
+    spd = auth.authenticate(gsa, username, password, twofa, interactive=interactive)
     dsid, pet, pet_expiry = auth.extract_pet(spd)
     if debug and log is not None:
         diag.dump(log, "GSA init response", gsa.last_init_response)
@@ -150,22 +155,25 @@ def _noninteractive_twofa(kind: str) -> str:
         "identity likely changed) - run `icp login` once interactively to re-establish trust")
 
 
-def _ensure_fresh_tokens(s: dict, device, anisette, *, interactive: bool) -> None:
-    """Make the cloudKitToken fresh before a sync. Re-mint it from the mmeAuthToken; if that
-    token has expired too, silently re-authenticate with the saved password (no manual login).
+def _ensure_fresh_tokens(s: dict, device, anisette, *, interactive: bool,
+                         allow_password: bool = True) -> None:
+    """Make the cloudKitToken fresh before a sync. Re-mint it from the mmeAuthToken; only if
+    Apple rejects that token itself (HTTP 401) re-authenticate with the saved password - and
+    only when `allow_password` (never from background runs: a password sign-in can push a 2FA
+    prompt to the user's devices, and repeated ones risk an account lock). A throttled or
+    unavailable endpoint is NOT an auth problem and is raised as-is for the caller's backoff.
     Raises icloud.ICloudError / AnisetteError / GSAError if it cannot recover."""
     try:
         _refresh_webservices(s, device, anisette)
         return
-    except icloud.ICloudError:
-        # The mmeAuthToken itself expired. Recover with the stored password if we have one.
+    except icloud.ICloudAuthExpired:
         password = s.get("password")
         username = s.get("username")
-        if not password or not username:
+        if not allow_password or not password or not username:
             raise
     ui.step("iCloud token expired - re-authenticating with the saved password...")
     twofa = _twofa_prompt if interactive else _noninteractive_twofa
-    _mint_tokens(s, username, password, device, anisette, twofa=twofa)
+    _mint_tokens(s, username, password, device, anisette, twofa=twofa, interactive=interactive)
     _refresh_webservices(s, device, anisette)   # retry with the fresh mmeAuthToken
 
 
@@ -237,6 +245,9 @@ def cmd_login(args) -> int:
         return 1
 
     rc = _join_and_sync(record, device, anisette, username, password)
+    if rc == 0:
+        from .. import ratelimit
+        ratelimit.clear_login_block()
     # Fetch Hide My Email here (interactive): its web session is a separate auth surface that may
     # need its own 2FA, so handle that during login rather than surprising a later `icp sync`.
     n_aliases = len(_fetch_aliases_best_effort(interactive=True))
@@ -279,7 +290,6 @@ def _status_summary() -> str:
     s = session.load()
     if not s:
         return "not signed in - run: icp login"
-    from ..octagon import client as octagon
     joined = "joined" if octagon.is_joined(s) else "not joined"
     token = ""
     icloud_auth = (s.get("app_tokens") or {}).get(ICLOUD_AUTH_TOKEN) or {}
@@ -407,6 +417,25 @@ def _printable(s: str) -> str:
     return "".join(ch if ch.isprintable() else "." for ch in s)
 
 
+_CLIPBOARDS = (
+    ["wl-copy"],
+    ["xclip", "-selection", "clipboard"],
+)
+
+
+def _copy_to_clipboard(text: str) -> bool:
+    """Copy `text` to the clipboard with the first available tool; False if none works."""
+    for cmd in _CLIPBOARDS:
+        if not shutil.which(cmd[0]): continue
+        try:
+            subprocess.run(cmd, input=text.encode(), check=True, timeout=5,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except (OSError, subprocess.SubprocessError):
+            continue
+    return False
+
+
 def _run_tui(store) -> int:
     """A very basic full-screen browser: status header, live-filter search box, and reveal a
     selected password with Enter. Type to filter, up/down to move, Esc to clear the query (or quit
@@ -417,7 +446,7 @@ def _run_tui(store) -> int:
     dom_w = min(max((len(c.domain) for c in creds), default=6), 32)
     user_w = min(max((len(c.username) for c in creds), default=4), 32)
     summary = _printable(f"{_status_summary()}  |  {len(creds)} credential(s)")
-    footer = "type to search | up/down move | Enter reveal | Esc clear/quit"
+    footer = "type to search | up/down move | Enter reveal | Ctrl+P copy password | Ctrl+U copy user | Esc clear/quit"
 
     def draw(stdscr):
         curses.curs_set(0)
@@ -432,7 +461,7 @@ def _run_tui(store) -> int:
             except curses.error:
                 pass
 
-        query, sel, offset, revealed = "", 0, 0, set()
+        query, sel, offset, revealed, msg = "", 0, 0, set(), ""
         while True:
             shown = [c for c in creds if _match(c, query.lower())]
             sel = max(0, min(sel, len(shown) - 1))
@@ -454,11 +483,19 @@ def _run_tui(store) -> int:
                 line = _printable(
                     f"{c.domain:<{dom_w}}  {c.username:<{user_w}}  {pw}{_totp_suffix(c)}")
                 put(3 + idx, 0, line, curses.A_REVERSE if i == sel else curses.A_NORMAL)
-            put(h - 1, 0, footer, curses.A_DIM)
+            put(h - 1, 0, msg or footer, curses.A_BOLD if msg else curses.A_DIM)
             stdscr.refresh()
 
             ch = stdscr.getch()
             if ch == -1:  # timeout: just redraw
+                continue
+            msg = ""
+            if ch in (16, 21):  # Ctrl+P / Ctrl+U 
+                if shown:
+                    c = shown[sel]
+                    what, value = ("password", c.password) if ch == 16 else ("username", c.username)
+                    msg = (f"{what} copied" if _copy_to_clipboard(value)
+                           else "copy failed (install wl-clipboard or xclip)")
                 continue
             if ch == 27:  # Esc: clear the query, or quit when it is already empty
                 if query:
@@ -492,10 +529,6 @@ def _join_and_sync(s: dict, device, anisette, username: str, password: str) -> i
     prompt that defaults to No. The given password (entered during sign-in) is reused for
     the escrow re-authentication, so it is never prompted twice.
     """
-    from ..octagon import client as octagon
-    from ..octagon.client import OctagonError
-    from ..transport.cloudkit import CloudKitError
-
     # Already a trusted keychain peer (e.g. a token-refresh re-login)? Octagon membership is
     # permanent, so skip the irreversible escrow join and just sync. Gate on is_joined, not a bare
     # peer_id: aborting bottle selection persists peer_id without ever joining.
@@ -505,6 +538,7 @@ def _join_and_sync(s: dict, device, anisette, username: str, password: str) -> i
             client = octagon.OctagonClient(s, device, anisette)
             session.save(s)
             n = client.sync_and_decrypt()
+            session.save(s)
         except (OctagonError, CloudKitError) as e:
             ui.err(f"sync failed: {e}")
             return 1
@@ -572,6 +606,7 @@ def _join_and_sync(s: dict, device, anisette, username: str, password: str) -> i
 
     try:
         n = client.sync_and_decrypt()
+        session.save(s)
     except CloudKitError as e:
         ui.err(f"joined, but sync failed: {e}")
         return 1
@@ -601,19 +636,27 @@ def _sync(args) -> int:
     Guarded by a non-blocking file lock so the periodic background trigger and a manual run
     can never overlap (a second sync exits immediately rather than racing on the vault)."""
     import fcntl
-    from ..octagon import client as octagon
-    from ..octagon.client import OctagonError
-    from ..transport.cloudkit import CloudKitError
     from ..paths import sync_lock_file
 
+    from .. import ratelimit
+    from ..auth.grandslam import TwoFactorUnavailable
+
+    background = getattr(args, "background", False)
     lock = open(sync_lock_file(), "w")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        ui.err("another sync is already running")
-        return 0
+        ui.err("busy - another sync is already running")
+        return EXIT_SKIPPED
 
     try:
+        state = ratelimit.load()
+        allowed, why = ratelimit.may_sync(state, force=getattr(args, "force", False),
+                                          background=background)
+        if not allowed:
+            ui.err(f"skipped: {why}")
+            return EXIT_SKIPPED
+        ratelimit.record_attempt(state)
         s = session.load()
         if not s:
             ui.err("not signed in - run: icp login")
@@ -626,30 +669,118 @@ def _sync(args) -> int:
         # The cached cloudKitToken is short-lived; re-mint it from the mmeAuthToken before every
         # sync. If the mmeAuthToken has also expired, _ensure_fresh_tokens silently re-authenticates
         # with the saved password (no manual login), unless 2FA is required or no password is saved.
+        interactive = sys.stdin.isatty() and not background
         try:
-            _ensure_fresh_tokens(s, device, anisette, interactive=sys.stdin.isatty())
+            _ensure_fresh_tokens(s, device, anisette, interactive=interactive,
+                                 allow_password=not background)
             session.save(s)  # persist any freshly re-minted tokens
+        except (icloud.ICloudAuthExpired, TwoFactorUnavailable) as e:
+            ratelimit.record_failure(state, "iCloud login needed - run `icp login`", auth=True)
+            ui.err(f"iCloud login needed: {e}")
+            return 1
         except (icloud.ICloudError, AnisetteError, GSAError) as e:
+            # GSAError here = a password sign-in failed: stop background syncs from retrying it
+            ratelimit.record_failure(state, f"token refresh failed: {e}",
+                                     auth=isinstance(e, GSAError),
+                                     retry_after=getattr(e, "retry_after", None))
             ui.err(f"could not refresh the iCloud token: {e}")
             return 1
         try:
             client = octagon.OctagonClient(s, device, anisette)
             session.save(s)  # persist the refreshed cloudKitToken + cloudKitUserId from ckAppInit
             n = client.sync_and_decrypt()
+            session.save(s)  # persist the shared-groups container user id
         except (OctagonError, CloudKitError) as e:
+            ratelimit.record_failure(state, f"sync failed: {e}",
+                                     retry_after=getattr(e, "retry_after", None))
             ui.err(f"sync failed: {e}")
             return 1
+        ratelimit.record_success(state)
         ui.out(f"Synced {n} credential(s) into the vault.")
-        # Best-effort, never interactive: refresh the Hide My Email cache only while the web
-        # session's trust is still valid, otherwise keep the cache. Its 2FA is handled at login
-        # (cmd_login), so sync never prompts - see _fetch_aliases_best_effort.
-        n_aliases = len(_fetch_aliases_best_effort(interactive=False))
-        if n_aliases:
-            ui.out(f"Cached {n_aliases} Hide My Email alias(es).")
+        # Best-effort, never interactive, at most once a day: the Hide My Email web session
+        # signs in with the password once its trust expires - not something to repeat every
+        # few minutes. Its 2FA is handled at login (cmd_login).
+        if ratelimit.hme_due(state):
+            ratelimit.mark_hme(state)
+            n_aliases = len(_fetch_aliases_best_effort(interactive=False))
+            if n_aliases:
+                ui.out(f"Cached {n_aliases} Hide My Email alias(es).")
         return 0
     finally:
         fcntl.flock(lock, fcntl.LOCK_UN)
         lock.close()
+
+
+# `sync` skipped (busy, too early, backing off, login needed) - like sysexits EX_TEMPFAIL
+EXIT_SKIPPED = 75
+
+
+def cmd_status(args) -> int:
+    """Sync pacing state for status displays (no network, no secrets)."""
+    import json
+    import time as _time
+    from .. import paths, ratelimit
+
+    st = ratelimit.load()
+    now = _time.time()
+    vault = paths.vault_file()
+    out = {
+        "signed_in": paths.session_file().exists(),
+        "last_success": st.get("last_success"),
+        "last_attempt": st.get("last_attempt"),
+        "next_allowed": (max(st.get("next_allowed", 0),
+                             st.get("last_attempt", 0) + ratelimit.MIN_INTERVAL)
+                         if st.get("last_attempt") else None),
+        "failures": st.get("failures", 0),
+        "needs_login": bool(st.get("needs_login")),
+        "last_error": st.get("last_error", ""),
+        "vault_mtime": vault.stat().st_mtime if vault.exists() else None,
+        "now": now,
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(out))
+        return 0
+    for k, v in out.items():
+        ui.out(f"{k:<14} {v}")
+    return 0
+
+
+def cmd_diag(args) -> int:
+    """Run read-only diagnostics."""
+    what = getattr(args, "what", "zones")
+    s = session.load()
+    if not s:
+        ui.err("not signed in - run: icp login")
+        return 1
+    device = Device.load_or_create()
+    anisette = Anisette(args.anisette)
+    try:
+        _ensure_fresh_tokens(s, device, anisette, interactive=sys.stdin.isatty())
+        session.save(s)
+        if what == "sharing":
+            diag.sharing_report(s, device, anisette, ui.out)
+            return 0
+        if what == "container":
+            if not getattr(args, "container", None):
+                ui.err("`diag container` needs --container <id> (and usually --bundle <id>)")
+                return 1
+            diag.sharing_report(s, device, anisette, ui.out,
+                                container=args.container, bundle=getattr(args, "bundle", None))
+            return 0
+        if not (s.get("octagon") or {}).get("peer_id"):
+            ui.err("not joined to the keychain - run: icp login")
+            return 1
+        client = octagon.OctagonClient(s, device, anisette)
+        session.save(s)
+        if what == "groups":
+            diag.groups_report(client, ui.out)
+            session.save(s)  # Persist kcsharingUserId.
+        else:
+            diag.zone_report(client, ui.out)
+    except (icloud.ICloudError, AnisetteError, GSAError, OctagonError, CloudKitError) as e:
+        ui.err(f"diag failed: {e}")
+        return 1
+    return 0
 
 
 def _ensure_web_session(s: dict, *, interactive: bool):
@@ -770,8 +901,28 @@ def main(argv=None) -> int:
                     help="print plain text instead of the interactive TUI")
     sp.set_defaults(func=cmd_show)
 
-    sub.add_parser("sync", help="re-fetch and decrypt the keychain into the vault"
-                   ).set_defaults(func=cmd_sync)
+    syp = sub.add_parser("sync", help="re-fetch and decrypt the keychain into the vault")
+    syp.add_argument("--background", action="store_true",
+                     help="unattended run: never sign in with the password or prompt for 2FA; "
+                          "stops until `icp login` when auth is gone")
+    syp.add_argument("--force", action="store_true",
+                     help="ignore the minimum interval / backoff (not the login stop)")
+    syp.set_defaults(func=cmd_sync)
+
+    stp = sub.add_parser("status", help="sync pacing state (last sync, next allowed, login needed)")
+    stp.add_argument("--json", action="store_true", help="machine-readable output")
+    stp.set_defaults(func=cmd_status)
+
+    dp = sub.add_parser(
+        "diag", help="read-only diagnostics (may print group names and opaque CloudKit IDs)")
+    dp.add_argument("what", choices=["zones", "sharing", "container", "groups"],
+                    help="zones: keychain CKKS zones this peer sees; "
+                         "groups: group names and decrypted record counts; "
+                         "sharing: zone/owner IDs and record counts; "
+                         "container: probe an arbitrary container (needs --container)")
+    dp.add_argument("--container", help="container id for `diag container`")
+    dp.add_argument("--bundle", help="bundle id to use for `diag container`")
+    dp.set_defaults(func=cmd_diag)
 
     sub.add_parser("mirror", help="copy logins into the system keyring (shows in Seahorse)"
                    ).set_defaults(func=cmd_mirror)

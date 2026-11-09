@@ -6,12 +6,7 @@ private, encrypted store on your machine. A browser extension fills them in for 
 Passwords app on a Mac or iPhone. Your Hide My Email addresses show up too. This project is a 
 reverse engineering attempt and **is not affiliated with Apple in any way**.
 
-> **Note:** Most of this project was written with AI assistance (and reviewed by a human).
-> It works with my own Apple account, but that's no guarantee it will work with yours.
-> Your passwords never leave your computer, and nothing is ever changed in your Apple
-> account - `icp` only reads.
-
-> This is also **untested** with Advanced Data Protection enabled. Any help with this will be appreciated -
+> This is **untested** with Advanced Data Protection enabled. Any help with this will be appreciated -
 > let me know if you have any issues with ADP enabled (also lmk if it works). Please don't spam escrow attempts!
 
 ## What you'll need
@@ -64,7 +59,7 @@ icp show
 ```
 
 Opens a full-screen list - start typing to filter, **Enter** to reveal a password,
-**Esc** to quit. Add a word to search directly, or `--plain` for plain text:
+**Ctrl+P** / **Ctrl+U** to copy the password / username to the clipboard, **Esc** to quit. Add a word to search directly, or `--plain` for plain text:
 
 ```
 icp show github
@@ -129,12 +124,23 @@ to do anything. To refresh right now:
 icp sync
 ```
 
+Syncs are paced so Apple is never hammered: at most one every 5 minutes (`--force` skips that),
+and after a failure the next try waits longer (5 min, 10, 20 ... up to 6 h, or whatever Apple's
+`Retry-After` asks for). Background syncs (`icp sync --background`, used by the browser helper and
+timers) never sign in with your password and never trigger a verification code on your devices -
+if your sign-in has expired they stop and wait for `icp login`. `icp status` shows the state.
+
+Shared password groups you created in the Passwords app are synced too; groups someone else
+shared with you are not yet.
+
 ## All commands
 
 ```
 login    sign in, join your iCloud Keychain, and download your passwords
 show     browse and search your passwords and Hide My Email addresses
-sync     refresh your passwords now
+sync     refresh your passwords now (--background for unattended runs, --force)
+status   last sync, next allowed sync, whether a login is needed (--json)
+diag     read-only diagnostics: zones, groups (counts only, no secrets)
 logout   sign out (use --wipe-device to also forget this device)
 ```
 

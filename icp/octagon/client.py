@@ -3,6 +3,8 @@ join(voucher) -> sync_keychain -> decrypt_to_vault. See RESEARCH.md (Stages 4-5)
 
 from __future__ import annotations
 
+import dataclasses
+import logging
 import time
 
 from . import keys as ok
@@ -13,6 +15,10 @@ from ..keychain import pipeline
 from ..proto import cuttlefish as cf
 from ..proto.codec import decode_fields, first, first_str
 from ..errors import AppleError
+from ..sharing import groups as sharing
+from ..vault.host import CredentialStore
+
+log = logging.getLogger(__name__)
 
 
 # Prevailing builtin Octagon policy version<->hash, declared in our stableInfo; Cuttlefish validates
@@ -117,13 +123,23 @@ def build_join_peer(oct_state: dict, keys: ok.PeerKeySet, voucher: cf.SignedBlob
         voucher=voucher)
 
 
-def decrypt_to_vault(records_by_type: dict, oct_state: dict, tlks: dict | None = None) -> int:
-    """Decrypt fetched CKKS records into the encrypted vault. Returns credential count. `tlks` are
-    the pre-fetched per-view TLKs (from fetchRecoverableTLKShares), UNIONed with the plain tlkshare
-    records addressed to us."""
+def decrypt_to_vault(records_by_type: dict, oct_state: dict, tlks: dict | None = None,
+                     shared=None) -> int:
+    """Decrypt CKKS records and any best-effort shared groups into the vault."""
     keys = load_peer_keys(oct_state)
-    store = pipeline.build_credential_store(
-        records_by_type, oct_state["peer_id"], keys.encryption.private_key, tlks=tlks)
+    items = pipeline.decrypt_all(records_by_type, oct_state["peer_id"],
+                                 keys.encryption.private_key, tlks)
+    creds = CredentialStore.from_items(items).all()
+    if shared is not None:
+        try:
+            groups = shared(items)
+        except (AppleError, ValueError, IndexError) as e:
+            log.warning("shared password groups skipped: %s", type(e).__name__)
+            groups = []
+        for g in groups:
+            creds += [dataclasses.replace(c, group=g["name"] or g["id"])
+                      for c in CredentialStore.from_items(g["items"]).all()]
+    store = CredentialStore(creds)
     vault.save_vault(store)
     return len(store)
 
@@ -318,4 +334,5 @@ class OctagonClient:
         tlks, view_synckeys = self.fetch_recoverable_tlks()
         records = self.sync_keychain()
         records.setdefault("synckey", []).extend(view_synckeys)
-        return decrypt_to_vault(records, self.record["octagon"], tlks)
+        return decrypt_to_vault(records, self.record["octagon"], tlks, shared=lambda items:
+                                sharing.fetch_groups(self.record, self.device, self.anisette, items))

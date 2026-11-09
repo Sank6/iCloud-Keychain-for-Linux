@@ -71,9 +71,9 @@ class GSAClient:
         )
 
         payload = plist.loads(resp.content)
-        response = payload.get("Response")
+        response = payload["Response"]
 
-        if not isinstance(response, dict) or not resp.ok:
+        if not resp.ok:
             raise GSAError(
                 f"GSA {operation} failed: HTTP {resp.status_code}: {_status(response)}"
             )
