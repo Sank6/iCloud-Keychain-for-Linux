@@ -184,6 +184,10 @@ def cmd_login(args) -> int:
     re-authentication, so it is never prompted twice. The irreversible escrow recovery is
     still gated by an explicit y/N prompt - answer No to stop after sign-in with tokens saved.
     """
+    if getattr(args, "gui", False) and not getattr(args, "_in_gui", False):
+        from ..gui import login as gui_login
+        args._in_gui = True
+        return gui_login.run(args)
     debug_path = diag.start() if args.debug else None
     log = logging.getLogger("icp.login")
 
@@ -888,6 +892,8 @@ def main(argv=None) -> int:
                     help="don't store the password for silent token refresh (re-login manually "
                          "each time the ~7-day token expires)")
     lp.add_argument("--debug", action="store_true", help="write a redacted debug transcript")
+    lp.add_argument("--gui", action="store_true",
+                    help="ask for the password, 2FA code and confirmations in dialogs")
     lp.set_defaults(func=cmd_login)
 
     sp = sub.add_parser(

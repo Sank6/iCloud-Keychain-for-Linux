@@ -114,6 +114,7 @@ class Window(Adw.ApplicationWindow):
         from gi.repository import Gio
         m = Gio.Menu()
         m.append("Sync now", "app.sync")
+        m.append("Sign in to iCloud\u2026", "app.login")
         m.append("Refresh keyring mirror", "app.mirror")
         m.append("Quit", "app.quit")
         return m
@@ -361,6 +362,8 @@ class App(Adw.Application):
         Adw.Application.do_startup(self)
         from gi.repository import Gio
         for name, fn in (("sync", lambda *_: self.props.active_window.run_cli("sync")),
+                         ("login", lambda *_: subprocess.Popen(
+                             [sys.executable, "-m", "icp.cli.app", "login", "--gui"])),
                          ("mirror", lambda *_: self.props.active_window.run_cli("mirror")),
                          ("quit", lambda *_: self.quit())):
             act = Gio.SimpleAction.new(name, None)

@@ -23,6 +23,7 @@ from . import paths
 MIN_INTERVAL = int(os.environ.get("ICP_MIN_SYNC_INTERVAL", "300"))   # 5 min
 BACKOFF_BASE = 300                                                    # first failure: 5 min
 BACKOFF_MAX = 6 * 3600                                                # cap: 6 h
+STOP_AFTER = 5       # consecutive failures after which unattended syncs stop until `icp login`
 HME_INTERVAL = 24 * 3600            # Hide My Email web sign-in at most once a day from `sync`
 
 
@@ -83,7 +84,7 @@ def record_failure(state: dict, message: str, *, auth: bool = False,
     if retry_after:
         delay = max(delay, min(float(retry_after), BACKOFF_MAX))
     state.update(failures=failures, next_allowed=now + delay, last_error=message[:200])
-    if auth:
+    if auth or failures >= STOP_AFTER:
         state["needs_login"] = True
     save(state)
 

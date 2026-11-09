@@ -95,6 +95,13 @@ before building on them.
 - **TPM-wrapped vault key**: this machine has a TPM2, but `systemd-creds encrypt --with-key=tpm2`
   fails for your user (`/dev/tpmrm0` is group `tss`, you are not in it), so it can't be built or
   tested without a system change (sudo `usermod -aG tss`). It also ties the vault to this TPM.
+- **Apple flow (done this round)**: `icp login --gui` (also "Sign in to iCloud\u2026" in the app
+  menu) asks for password, 2FA code and the join confirmation in dialogs; unattended syncs now
+  stop after 5 consecutive failures (not just auth failures) until `icp login`; upstream already
+  reuses the saved token, backs off 5 min -> 6 h and never signs in with the password from
+  background runs. Still NOT done: generating anisette locally (large; today a third-party/local
+  anisette server supplies it) and a Rust port of the sign-in. The GUI login window is import-
+  and unit-checked only; it has not been driven against Apple.
 - **Apple sign-in**: merged upstream `origin/main` into `fix-gsa-client-identity` (work committed
   first; the only conflict was `GSA_CLIENT_INFO`, resolved to upstream's Windows identity). 247
   tests pass. One non-interactive `icp sync` after the merge no longer gets `ec=-80045` but Apple
