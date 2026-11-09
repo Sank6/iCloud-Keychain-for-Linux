@@ -67,7 +67,7 @@ class MasterKeyTests(unittest.TestCase):
         with self.assertRaises(session.SessionError):
             session.load()
 
-    def test_undecryptable_caches_are_discarded(self):
+    def test_undecryptable_caches_are_kept(self):
         from icp.auth import session
         from icp.hme import store as hme
         from icp.hme.client import HmeAlias
@@ -82,8 +82,29 @@ class MasterKeyTests(unittest.TestCase):
         self.assertEqual(len(vault.load_vault()), 1)
 
         self._key_file().write_bytes(base64.b64encode(os.urandom(32)))
-        self.assertEqual(len(vault.load_vault()), 0)  # dropped, rebuilt by the next sync
+        with self.assertRaises(session.SessionError):
+            vault.load_vault()
+        self.assertTrue(self._key_file().parent.joinpath("vault.enc").exists())  # never deleted
         self.assertEqual(hme.load_aliases(), [])
+        self.assertTrue(self._key_file().parent.joinpath("aliases.enc").exists())
+
+    def test_missing_key_with_data_is_refused_not_regenerated(self):
+        from icp.auth import session
+        session.save({"a": 1})
+        self._key_file().unlink()
+        with self.assertRaises(session.KeyLost):
+            session._master_key()
+        self.assertFalse(self._key_file().exists())  # nothing minted
+
+    def test_reset_keys_moves_data_aside(self):
+        from icp.auth import session
+        session.save({"a": 1})
+        done = session.reset_keys()
+        self.assertTrue(any("session.enc" in d for d in done))
+        self.assertFalse(self._key_file().exists())
+        self.assertTrue(list(self._key_file().parent.glob("session.enc.lost-*")))
+        session.save({"b": 2})  # a clean start works
+        self.assertEqual(session.load(), {"b": 2})
 
 
 if __name__ == "__main__":

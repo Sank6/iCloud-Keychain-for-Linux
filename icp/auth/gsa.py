@@ -11,13 +11,13 @@ import hmac
 import logging
 import plistlib as plist
 
-import requests
+import requests  # noqa: F401 - tests patch gsa.requests.*
 import srp._pysrp as srp
 import urllib3
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from .. import const
+from .. import const, net
 from .anisette import Anisette
 from .device import Device
 from .headers import identity_headers
@@ -32,7 +32,20 @@ logger = logging.getLogger(__name__)
 
 
 class GSAError(AppleError):
-    pass
+    """A GrandSlam failure. `kind` mirrors icp.net's error kinds ("blocked", "network", ...) when
+    the cause was the HTTP layer; `retry_after` is Apple's requested delay in seconds."""
+
+    def __init__(self, message: str = "", *, kind: str = "", retry_after: float | None = None):
+        super().__init__(message)
+        self.kind, self.retry_after = kind, retry_after
+
+
+def _net(operation: str, **kw):
+    """requests-style call through icp.net, with network-layer errors re-raised as GSAError."""
+    try:
+        return net.request(**kw)
+    except net.AppleNetError as e:
+        raise GSAError(f"GSA {operation}: {e}", kind=e.kind, retry_after=e.retry_after) from e
 
 
 class GSAClient:
@@ -65,18 +78,18 @@ class GSAClient:
             "User-Agent": const.GSA_USER_AGENT,
             "X-MMe-Client-Info": const.GSA_CLIENT_INFO,
         }
-        resp = requests.post(
-            const.GSA_ENDPOINT, headers=headers, data=plist.dumps(body),
-            verify=False, timeout=10,
-        )
+        resp = _net(operation, method="post", url=const.GSA_ENDPOINT, headers=headers,
+                    data=plist.dumps(body), verify=False)
 
         try:
             payload = plist.loads(resp.content)
             response = payload["Response"]
         except Exception:
+            if ne := net.auth_error(resp, "the sign-in request"):
+                raise GSAError(f"GSA {operation} failed: {ne}", kind=ne.kind) from None
             raise GSAError(
                 f"GSA {operation} failed: HTTP {resp.status_code}: "
-                f"non-plist reply ({len(resp.content)} bytes)"
+                f"non-plist reply ({len(resp.content)} bytes)", kind="protocol"
             ) from None
 
         if not resp.ok:
@@ -107,7 +120,8 @@ class GSAClient:
         self.last_complete_response = complete
         logger.debug("GSA complete response keys: %s", list(complete))
         if "M2" not in complete:
-            raise GSAError(f"{stage}: complete failed: {_status(complete)}")
+            raise GSAError(f"{stage}: complete failed: {_status(complete)}",
+                           kind=_status_kind(complete))
         usr.verify_session(complete["M2"])
         if not usr.authenticated():
             raise GSAError("server session verification failed (imposter?)")
@@ -118,28 +132,21 @@ class GSAClient:
         return complete, spd
 
     def trigger_trusted_factor(self, dsid: str, idms_token: str) -> None:
-        requests.get(
-            "https://gsa.apple.com/auth/verify/trusteddevice",
-            headers=self._twofa_headers(dsid, idms_token),
-            verify=False, timeout=10,
-        )
+        _net("2FA trigger", method="get", url="https://gsa.apple.com/auth/verify/trusteddevice",
+             headers=self._twofa_headers(dsid, idms_token), verify=False)
 
     def submit_trusted_factor(self, code: str, dsid: str, idms_token: str) -> None:
         h = self._twofa_headers(dsid, idms_token)
         h["security-code"] = code
-        resp = requests.get(
-            "https://gsa.apple.com/grandslam/GsService2/validate",
-            headers=h, verify=False, timeout=10,
-        )
+        resp = _net("2FA validate", method="get",
+                    url="https://gsa.apple.com/grandslam/GsService2/validate",
+                    headers=h, verify=False)
         _check_code(resp, "trusted-device")
 
     def trigger_sms_factor(self, dsid: str, idms_token: str, phone_id: int = 1) -> None:
-        requests.put(
-            "https://gsa.apple.com/auth/verify/phone/",
-            json={"phoneNumber": {"id": phone_id}, "mode": "sms"},
-            headers=self._twofa_headers(dsid, idms_token),
-            verify=False, timeout=10,
-        )
+        _net("SMS trigger", method="put", url="https://gsa.apple.com/auth/verify/phone/",
+             json={"phoneNumber": {"id": phone_id}, "mode": "sms"},
+             headers=self._twofa_headers(dsid, idms_token), verify=False)
 
     def submit_sms_factor(self, code: str, dsid: str, idms_token: str, phone_id: int = 1) -> None:
         body = {
@@ -147,11 +154,9 @@ class GSAClient:
             "mode": "sms",
             "securityCode": {"code": code},
         }
-        resp = requests.post(
-            "https://gsa.apple.com/auth/verify/phone/securitycode",
-            json=body, headers=self._twofa_headers(dsid, idms_token),
-            verify=False, timeout=10,
-        )
+        resp = _net("SMS validate", method="post",
+                    url="https://gsa.apple.com/auth/verify/phone/securitycode",
+                    json=body, headers=self._twofa_headers(dsid, idms_token), verify=False)
         _check_code(resp, "SMS")
 
     def _twofa_headers(self, dsid: str, idms_token: str) -> dict:
@@ -193,6 +198,15 @@ def _decrypt_cbc(usr, data: bytes) -> bytes:
     return unpadder.update(data) + unpadder.finalize()
 
 
+# Apple status codes meaning "Apple ID or password is incorrect" (seen from GrandSlam/pypush).
+_BAD_CREDENTIALS = {-20101, -22406}
+
+
+def _status_kind(r: dict) -> str:
+    ec = r.get("Status", r).get("ec")
+    return "credentials" if ec in _BAD_CREDENTIALS else ""
+
+
 def _status(r: dict) -> str:
     s = r.get("Status", r)
     return f"ec={s.get('ec')} em={s.get('em')!r} au={s.get('au')!r}"
@@ -205,4 +219,5 @@ def _check_code(resp, kind: str) -> None:
     except Exception:  # noqa: BLE001 - a rejected identity token answers 401 with no body
         body = {}
     if body.get("ec") or not resp.ok:
-        raise GSAError(f"{kind} 2FA code rejected: {body.get('em') or resp.status_code}")
+        raise GSAError(f"{kind} 2FA code rejected: {body.get('em') or resp.status_code}",
+                       kind="code")

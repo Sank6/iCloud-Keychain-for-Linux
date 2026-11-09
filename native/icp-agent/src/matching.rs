@@ -21,6 +21,7 @@ pub struct Credential {
     #[serde(default)] pub notes: String,
     #[serde(default)] pub last_used: f64,
     #[serde(default)] pub totp: String,
+    #[serde(default)] pub group: String,   // empty for the user's own keychain
 }
 
 impl Credential {
@@ -37,6 +38,7 @@ impl Credential {
         m.insert("mdat".into(), json!(self.mdat));
         m.insert("notes".into(), json!(self.notes));
         m.insert("last_used".into(), json!(self.last_used));
+        m.insert("group".into(), json!(self.group));
         m.insert("totp".into(), t);
         Value::Object(m)
     }

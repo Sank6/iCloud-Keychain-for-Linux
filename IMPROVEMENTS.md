@@ -431,3 +431,88 @@ Status: **works end to end in a throwaway headless Helium profile; not yet tried
   browser, was rejected.
 - Not done: Rust port of the host (Python for now; the Rust agent still serves lookups), TOTP over this
   protocol, PROTO 1 proofs, `icp setup` integration, and trying it in your real Helium profile.
+
+
+---
+
+## Anisette without Docker (investigation, read-only; nothing downloaded or run)
+
+What anisette is: the `X-Apple-I-MD` / `X-Apple-I-MD-M` headers are a one-time-password plus machine
+blob produced by Apple's `AuthKit`/`CoreADI` code (`ADI` = Apple Device Identity). Apple's servers
+check that they are consistent with a provisioned "device". Apple publishes no algorithm.
+
+| Option | Needs | Verdict |
+|---|---|---|
+| `dadoum/anisette-v3-server` (today) | Docker/Podman; the image fetches Apple's `libstoreservicescore` / `libCoreADI` (from the Apple Music Android package) on first start and runs them under an ELF loader shim | works, but it **downloads Apple binaries at runtime** and needs a container runtime; was exposed on 0.0.0.0 (fixed in docs/doctor) |
+| Run the same server natively (no container) | the same Apple libraries + the Provision project's loader | removes Docker, not the Apple-binary download; build from source needs a D/C toolchain. Not implemented here (the task forbids downloading Apple binaries) |
+| Emulate the Mac `NAC` routine (OpenBubbles `open-absinthe`, older pypush) | an Apple macOS binary plus an x86 emulator (`unicorn`), or a relay | heavier and fragile; same Apple-binary dependency |
+| Third-party public anisette servers (SideStore community) | nothing local | sends your device identity to a stranger; `icp doctor` warns about non-loopback URLs. Acceptable only as a stopgap |
+| Wine + Apple's Windows client | see the Wine section above | biggest, most fragile |
+| Pure-Python/Rust re-implementation of ADI | reverse engineering of `CoreADI` | no known open implementation; **not realistic** |
+
+**Recommendation:** keep a *loopback-only* container (or rootless Podman via the Quadlet in
+`packaging/anisette/`) for now; it is a few MB of RAM and survives reboots. The realistic Docker-free
+path is a small native service that loads the same Apple libraries the way Provision does, and that
+still needs a one-time download, so it requires an explicit go-ahead. Do not spend effort on
+re-implementing ADI. Note the current container has **no volume**: deleting it loses its provisioned
+identity, so back it up first (`docker cp anisette:/home/Chester/.config/anisette-v3 ./backup`, path
+from the image's README, unverified) before re-creating it on 127.0.0.1.
+
+## Reliability and native-feel plan
+
+### What changed in this round
+- **Sign-in is a first-class flow.** `icp login --gui` (also the app menu, the app banner and the
+  browser popup button) shows a real form (Apple ID, password, "remember in keyring"), then 2FA /
+  join confirmation dialogs. Cancel at any prompt aborts without sending anything; a mistyped 2FA
+  code is asked again (max 3, no new push); a wrong password and "Apple is refusing the request"
+  have their own wording and the form stays. Logic is toolkit-free (`icp/gui/loginflow.py`, tested).
+- **"Needs sign-in" state** (`needs_login`) is raised by auth-class failures, 403s, and a missing
+  session, and is shown by the GTK app (banner + button), `icp doctor`, `icp status`, the popup
+  ("Sign in..." button -> new agent command `login`, ported to the Rust agent) and a desktop
+  notification. Offline / open-breaker failures are *transient*: they delay, never demand a sign-in.
+- **Keyring**: all Secret Service access goes through `icp/keyring.py` (typed
+  unavailable/locked/dismissed errors, no prompts in background runs, `mirror_collection` config).
+  The Apple ID (+ optional password) is a normal Seahorse item (`icp/account.py`); with a keyring
+  the password is no longer inside `session.enc`. **No silent key regeneration**: a missing key with
+  existing encrypted files raises `KeyLost`; undecryptable `vault.enc` is no longer deleted;
+  `icp logout --reset-keys` is the explicit, non-destructive (files renamed `.lost-<time>`) start over.
+  A key found in `master.key` is moved into the keyring. The mirror never wipes itself from an empty
+  vault, skips when nothing changed, and `icp logout` removes mirrored items (`--keep-mirror`).
+- **One HTTP layer** (`icp/net.py`): timeouts, per-host spacing, backoff+jitter, `Retry-After`, no
+  retry on 401/403, a persisted per-host circuit breaker (unattended calls only), typed errors
+  (`NetworkDown`, `AuthRejected`, `BlockedByApple`, `Throttled`, `ServerError`, `CircuitOpen`),
+  URL-only logging. GSA, loginDelegates, account settings, CloudKit, escrow, idmsa web and Hide My
+  Email all use it. The first-request HTTP 403 now says what it means and what to do.
+- **Unattended = no terminal and no `--force`** (even without `--background`), so an older agent
+  whose `sync-cmd` lacks the flag can no longer sign in with the password.
+- **Slimming**: `status.py` is now a read-only view over `ratelimit` state (one writer, one
+  source of truth; `sync-status.json` is a projection for the Rust agent); shared `framing.py`;
+  atomic private writes; `doctor` anisette/keyring logic deduplicated.
+- **Config**: `~/.config/icp/config.toml` (`anisette_url`, `mirror_collection`), one resolver
+  (`icp/config.py`), loopback default `http://127.0.0.1:6969`; hard-coded `localhost`, `6969` hints
+  and `~/.config` paths replaced. Anisette packaging: `packaging/anisette/` (Quadlet + systemd unit).
+- **Rust parity**: re-run against the Python agent on the real vault: 871 requests (705 domains,
+  42 codes, lock/unlock, errors), 0 differences, after fixing two drifts the run found (the
+  `group` field of shared-group logins, and the unknown-command error text). New Rust: `login`,
+  `signed_in` in `status`, never auto-sync while `needs_login`, `--background` forced on
+  `sync-cmd`.
+
+### Still hacky
+- GUI sign-in has been exercised only headless (widgets built, outcomes rendered) and with a
+  faked `cmd_login`; it has not been driven through real dialogs or against Apple.
+- `Adw.MessageDialog` is deprecated in libadwaita 1.6 (works; port to `Adw.AlertDialog`).
+- The breaker and pacing are per process / per file with no cross-process lock (last writer wins).
+- Python tests must run with `DBUS_SESSION_BUS_ADDRESS` unset (older tests would otherwise read the
+  real keyring); a shared test fixture should enforce that.
+- The installed Rust agent binary in `~/.local/share/icp` is the old build until `icp setup`.
+- Docker volume path for the anisette image is from memory of its README (unverified).
+
+### Next steps (priority order)
+1. Re-create the anisette container on 127.0.0.1 (`packaging/anisette/README.md`), then one
+   interactive `icp login --gui` once Apple stops answering 403.
+2. Local anisette provider without Docker (needs a go-ahead for one Apple-library download).
+3. Rust port of sync (GSA/SRP, CloudKit, Octagon, CKKS) using the Python tests as golden vectors;
+   then the Rust agent can own sign-in state too.
+4. Packaging: install `icp-agent`/`icp-shim` + units from the `.deb`, Flatpak/AUR; drop `setup`'s
+   per-user copies.
+5. `Adw.AlertDialog`, a Rust GTK app (needs `libadwaita-1-dev`), automated browser tests.

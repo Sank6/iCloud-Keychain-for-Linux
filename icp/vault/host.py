@@ -15,13 +15,11 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
-import json
 import plistlib
 import re
-import struct
 import sys
 
-from .. import choices, psl, related, totp as totp_codes
+from .. import choices, framing, psl, related, totp as totp_codes
 
 
 @dataclasses.dataclass(frozen=True)
@@ -343,24 +341,14 @@ class CredentialStore:
         return cls(creds)
 
 
-# native-messaging framing
+# native-messaging framing lives in icp/framing.py
 def read_message(stream=None) -> dict | None:
-    stream = stream or sys.stdin.buffer
-    raw_len = stream.read(4)
-    if len(raw_len) < 4:
-        return None
-    (length,) = struct.unpack("<I", raw_len)
-    data = stream.read(length)
-    if len(data) < length:
-        return None
-    return json.loads(data.decode("utf-8"))
+    return framing.read(stream or sys.stdin.buffer)
 
 
 def write_message(message: dict, stream=None) -> None:
     stream = stream or sys.stdout.buffer
-    encoded = json.dumps(message).encode("utf-8")
-    stream.write(struct.pack("<I", len(encoded)))
-    stream.write(encoded)
+    stream.write(framing.pack(message))
     stream.flush()
 
 
@@ -381,15 +369,17 @@ def handle(request: dict, store: CredentialStore, aliases: list | None = None) -
                 if q in f"{c.title} {c.domain} {c.username}".lower()]
         hits.sort(key=lambda c: -c.recency)
         return {"ok": True, "credentials": [c.wire_dict() for c in hits[:40]]}
-    if cmd == "open_app":
+    if cmd in ("open_app", "login"):
         import subprocess
-        subprocess.Popen([sys.executable, "-m", "icp.gui"], stdin=subprocess.DEVNULL,
+        argv = ["-m", "icp.gui"] if cmd == "open_app" else ["-m", "icp.cli.app", "login", "--gui"]
+        subprocess.Popen([sys.executable, *argv], stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True)
         return {"ok": True}
     if cmd == "status":
-        from .. import status
-        return {"ok": True, "count": len(store), "sync": status.read()}
+        from .. import paths, status
+        return {"ok": True, "count": len(store), "sync": status.read(),
+                "signed_in": paths.session_file().exists()}
     if cmd == "match":
         domain = request.get("domain", "")
         if not domain:
@@ -442,6 +432,8 @@ def _maybe_trigger_sync() -> None:
         # retried against Apple every few minutes.
         from .. import status
         st = status.read()
+        if st.get("needs_login"):
+            return  # nothing an unattended sync can fix; the UIs offer "Sign in"
         fails = int(st.get("failures", 0))
         if fails and time.time() - st.get("last_attempt", 0) < min(900 * 2 ** (fails - 1), 86400):
             return

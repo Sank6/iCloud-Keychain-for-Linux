@@ -14,8 +14,11 @@ GSA_CLIENT_INFO = (
     "<com.apple.AuthKit/1 (com.apple.akd/1.0)>"
 )
 
-# Default anisette server (SideStore ecosystem). Override with ICP_ANISETTE_URL.
-DEFAULT_ANISETTE_URL = "http://localhost:6969"
+# Default anisette server: loopback only. Override with --anisette, ICP_ANISETTE_URL or
+# `anisette_url` in ~/.config/icp/config.toml (see icp/config.py).
+ANISETTE_PORT = 6969
+DEFAULT_ANISETTE_URL = f"http://127.0.0.1:{ANISETTE_PORT}"
+ANISETTE_IMAGE = "docker.io/dadoum/anisette-v3-server:latest"
 
 GSA_ENDPOINT = "https://gsa.apple.com/grandslam/GsService2"
 

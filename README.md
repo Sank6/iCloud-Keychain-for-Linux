@@ -16,11 +16,14 @@ only Apple's own software can produce; the anisette server provides it locally. 
 Docker (or Podman) - it keeps running in the background:
 
 ```
-docker run -d --restart=always -p 6969:6969 dadoum/anisette-v3-server:latest
+docker run -d --restart=always --name icp-anisette -p 127.0.0.1:6969:6969 dadoum/anisette-v3-server:latest
 ```
 
-You only have to do this once. (If you run it somewhere other than the default
-`http://localhost:6969`, set `ICP_ANISETTE_URL` to its address.)
+Note `127.0.0.1:` in front of the port: without it Docker listens on every network interface and
+anyone on your LAN can use the (unauthenticated) server. `icp doctor` warns if it does. You only
+have to do this once; unit files for starting it at login are in `packaging/anisette/`. (To use
+another address, set `ICP_ANISETTE_URL`, pass `--anisette URL`, or put `anisette_url = "..."` in
+`~/.config/icp/config.toml`; the default is `http://127.0.0.1:6969`.)
 
 You will also need this repo. Clone it / download it as you wish.
 
@@ -36,7 +39,8 @@ source .venv/bin/activate
 ## Sign in
 
 ```
-icp login
+icp login --gui      # a sign-in window, no terminal needed (also in the Passwords app and the extension popup)
+icp login            # the same in a terminal
 ```
 
 This will walk you through the login: enter your Apple ID, password, and the 2FA code Apple
@@ -49,8 +53,10 @@ it can join your keychain.
   perfectly safe.
 - Your 2FA code and passcode are used immediately and **never saved**. Your password is kept
   **encrypted on your computer** (in your login keyring) so `icp` can stay signed in without
-  asking you again - it never leaves your machine. Your access tokens and passwords are stored
-  the same way.
+  asking you again - it never leaves your machine. Your Apple ID and password are a normal
+  Secret Service item (visible in Seahorse, removed by `icp logout`); tokens are stored encrypted.
+- Wrong password, a mistyped 2FA code and Cancel are handled in the window; nothing is sent to
+  Apple when you cancel.
 
 ## Browse your passwords
 
@@ -141,7 +147,10 @@ show     browse and search your passwords and Hide My Email addresses
 sync     refresh your passwords now (--background for unattended runs, --force)
 status   last sync, next allowed sync, whether a login is needed (--json)
 diag     read-only diagnostics: zones, groups (counts only, no secrets)
-logout   sign out (use --wipe-device to also forget this device)
+logout   sign out: clears the session, the saved Apple ID and the keyring mirror
+         (--purge-vault, --wipe-device, --keep-mirror; --reset-keys after losing the keyring entry)
+doctor   checklist: anisette (and whether it is exposed on your LAN), keyring, sign-in, hosts
+mirror   copy logins into the keyring now (Seahorse); gui opens the Passwords window
 ```
 
 ## Credits

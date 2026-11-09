@@ -6,8 +6,10 @@ vault; unlocking reloads it (which asks the keyring again if needed)."""
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 
@@ -19,22 +21,15 @@ except ImportError:  # venv without system site-packages: borrow the distro's Py
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, GLib, GObject, Gtk  # noqa: E402
 
-from .. import status, totp as totp_codes  # noqa: E402
+from .. import paths, status, totp as totp_codes  # noqa: E402
+from . import model  # noqa: E402
 
 APP_ID = "org.icp.Passwords"
-IDLE_LOCK_SECONDS = 5 * 60
+IDLE_LOCK_SECONDS = int(os.environ.get("ICP_GUI_IDLE_LOCK", str(5 * 60)))
 CLIPBOARD_CLEAR_SECONDS = 30
-
-
-def _ago(ts: float) -> str:
-    d = max(0, time.time() - ts)
-    for unit, n in (("day", 86400), ("hour", 3600), ("minute", 60)):
-        if d >= n:
-            v = int(d // n)
-            return f"{v} {unit}{'' if v == 1 else 's'} ago"
-    return "just now"
+POLL_SECONDS = 5   # how often the window re-reads the sync status and notices a new vault
 
 
 class Window(Adw.ApplicationWindow):
@@ -46,6 +41,8 @@ class Window(Adw.ApplicationWindow):
         self.copy_token = 0
         self.last_activity = time.time()
         self.code_rows: list = []
+        self.vault_mtime = 0.0
+        self.ticks = 0
 
         self.stack = Adw.ViewStack()
         self.set_content(self.stack)
@@ -63,12 +60,18 @@ class Window(Adw.ApplicationWindow):
 
     # ---- building the UI -------------------------------------------------------------------
     def _build_main(self):
-        self.search = Gtk.SearchEntry(placeholder_text="Search", hexpand=True)
-        self.search.connect("search-changed", lambda *_: self.listbox.invalidate_filter())
+        self.search = Gtk.SearchEntry(placeholder_text="Search (Ctrl+F)", hexpand=True)
+        self.search.connect("search-changed", self._on_search)
+        self.search.connect("activate", self._search_activate)
+        self.search.connect("stop-search", lambda *_: self.search.set_text(""))
+        self.search.set_key_capture_widget(self)   # just start typing to search
         self.listbox = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
         self.listbox.add_css_class("navigation-sidebar")
         self.listbox.set_filter_func(self._filter)
         self.listbox.set_sort_func(self._sort)
+        self.listbox.set_placeholder(Adw.StatusPage(icon_name="system-search-symbolic",
+                                                    title="No Results",
+                                                    description="Try a different search."))
         self.listbox.connect("row-selected", self._on_select)
         scroll = Gtk.ScrolledWindow(child=self.listbox, vexpand=True,
                                     hscrollbar_policy=Gtk.PolicyType.NEVER)
@@ -76,6 +79,10 @@ class Window(Adw.ApplicationWindow):
         self.sync_label = Gtk.Label(xalign=0, wrap=True, margin_start=12, margin_end=12,
                                     margin_top=6, margin_bottom=6)
         self.sync_label.add_css_class("caption")
+        # "needs sign-in" / "sync failing" banner above everything, with the action button
+        self.banner = Adw.Banner(revealed=False)
+        self.banner.connect("button-clicked", self._banner_clicked)
+        self.banner_action = ""
 
         menu = Gtk.PopoverMenu.new_from_model(self._menu_model())
         menu_btn = Gtk.MenuButton(icon_name="open-menu-symbolic", popover=menu, tooltip_text="Menu")
@@ -108,7 +115,15 @@ class Window(Adw.ApplicationWindow):
         split = Adw.NavigationSplitView()
         split.set_sidebar(Adw.NavigationPage(child=side_view, title="Logins"))
         split.set_content(Adw.NavigationPage(child=content_view, title="Details"))
-        return split
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        outer.append(self.banner)
+        split.set_vexpand(True)
+        outer.append(split)
+        find = Gtk.ShortcutController()
+        find.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string("<Control>f"),
+                                           Gtk.CallbackAction.new(lambda *_: self._focus_search())))
+        self.add_controller(find)
+        return outer
 
     def _menu_model(self):
         from gi.repository import Gio
@@ -120,8 +135,9 @@ class Window(Adw.ApplicationWindow):
         return m
 
     def _build_locked(self):
-        page = Adw.StatusPage(icon_name="changes-prevent-symbolic", title="Passwords Locked",
-                              description="Your logins are cleared from memory while locked.")
+        page = self.locked_page = Adw.StatusPage(
+            icon_name="changes-prevent-symbolic", title="Passwords Locked",
+            description="Your logins are cleared from memory while locked.")
         btn = Gtk.Button(label="Unlock", halign=Gtk.Align.CENTER, css_classes=["suggested-action",
                                                                                  "pill"])
         btn.connect("clicked", lambda *_: self.unlock())
@@ -135,20 +151,28 @@ class Window(Adw.ApplicationWindow):
         try:
             from ..vault.store import load_vault
             self.creds = load_vault().all()
-        except Exception as e:
+        except Exception as e:   # keyring locked/dismissed, key lost, unreadable vault
             self.creds = []
+            self.locked_page.set_title("Could Not Unlock")
+            self.locked_page.set_description(GLib.markup_escape_text(str(e)))
             self.stack.set_visible_child_name("locked")
-            self._toast(f"Could not unlock: {e}")
             return
+        vf = paths.vault_file()
+        self.vault_mtime = vf.stat().st_mtime if vf.exists() else 0.0
         self.last_activity = time.time()
         self._populate()
         self._refresh_sync()
         self.stack.set_visible_child_name("main")
 
     def lock(self):
-        self.creds, self.current = [], None
+        self.creds, self.current, self.revealed = [], None, False
+        self.copy_token += 1   # a pending clipboard clear belongs to the old session
         self._clear_list()
+        self.search.set_text("")
+        self.code_rows = []
         self.detail_stack.set_visible_child_name("empty")
+        self.locked_page.set_title("Passwords Locked")
+        self.locked_page.set_description("Your logins are cleared from memory while locked.")
         self.stack.set_visible_child_name("locked")
 
     def _touch(self, *_a):
@@ -156,13 +180,28 @@ class Window(Adw.ApplicationWindow):
         return False
 
     def _tick(self):
+        self.ticks += 1
         if self.stack.get_visible_child_name() == "main":
             if time.time() - self.last_activity > IDLE_LOCK_SECONDS:
                 self.lock()
             else:
                 for paint in self.code_rows:
                     paint()
+                if self.ticks % POLL_SECONDS == 0:
+                    self._poll()
         return True
+
+    def _poll(self):
+        """Pick up a new sync result / vault without the user doing anything (e.g. after the
+        sign-in window finished)."""
+        self._refresh_sync()
+        vf = paths.vault_file()
+        mtime = vf.stat().st_mtime if vf.exists() else 0.0
+        if mtime != self.vault_mtime:
+            keep = self.current
+            self.unlock()
+            if keep is not None:
+                self.select_key(self._key(keep), clear_search=False)
 
     # ---- list --------------------------------------------------------------------------------
     def _clear_list(self):
@@ -180,17 +219,33 @@ class Window(Adw.ApplicationWindow):
             self.listbox.append(row)
 
     def _filter(self, row):
-        q = self.search.get_text().strip().lower()
-        if not q:
-            return True
-        c = row.cred
-        return q in f"{c.title} {c.domain} {c.username}".lower()
+        return model.matches(row.cred, self.search.get_text())
 
     @staticmethod
     def _sort(a, b):
-        ka = (a.cred.title or a.cred.domain).lower()
-        kb = (b.cred.title or b.cred.domain).lower()
+        ka, kb = model.sort_key(a.cred), model.sort_key(b.cred)
         return (ka > kb) - (ka < kb)
+
+    def _on_search(self, *_):
+        self.listbox.invalidate_filter()
+
+    def _first_visible(self):
+        i = 0
+        while (row := self.listbox.get_row_at_index(i)) is not None:
+            if row.get_child_visible() and self._filter(row):
+                return row
+            i += 1
+        return None
+
+    def _search_activate(self, *_):
+        """Enter in the search box opens the first match."""
+        if row := self._first_visible():
+            self.listbox.select_row(row)
+            row.grab_focus()
+
+    def _focus_search(self):
+        self.search.grab_focus()
+        return True
 
     # ---- detail ------------------------------------------------------------------------------
     def _on_select(self, _lb, row):
@@ -204,12 +259,11 @@ class Window(Adw.ApplicationWindow):
         if what in ("Password", "Code"):
             # x-kde-passwordManagerHint asks clipboard managers (Klipper, CopyQ, ...) not to record it
             clip.set_content(Gdk.ContentProvider.new_union([
-                Gdk.ContentProvider.new_for_value(text),
+                Gdk.ContentProvider.new_for_value(GObject.Value(str, text)),
                 Gdk.ContentProvider.new_for_bytes("x-kde-passwordManagerHint",
                                                   GLib.Bytes.new(b"secret"))]))
         else:
-            clip.set(text)
-        self.copy_token += 1
+            clip.set(text)   # str -> GValue; usernames are not secret
         token = self.copy_token
 
         def clear():
@@ -290,12 +344,17 @@ class Window(Adw.ApplicationWindow):
         self.detail_stack.add_named(page, "detail")
         self.detail_stack.set_visible_child_name("detail")
 
-    def select_key(self, key: str):
+    @staticmethod
+    def _key(cred) -> str:
         from ..mirror import item_id
-        self.search.set_text("")
+        return item_id(cred.domain, cred.username)
+
+    def select_key(self, key: str, clear_search: bool = True):
+        if clear_search:
+            self.search.set_text("")
         i = 0
         while (row := self.listbox.get_row_at_index(i)) is not None:
-            if item_id(row.cred.domain, row.cred.username) == key:
+            if self._key(row.cred) == key:
                 self.listbox.select_row(row)
                 row.grab_focus()
                 return
@@ -303,26 +362,41 @@ class Window(Adw.ApplicationWindow):
 
     # ---- sync status & actions -----------------------------------------------------------------
     def _refresh_sync(self):
-        s = status.read()
-        n = len(self.creds)
-        if s.get("failures"):
-            txt = f"{n} logins · sync failing" + (f": {s['hint']}" if s.get("hint") else "")
+        st = model.sync_state(status.read(), len(self.creds),
+                              signed_in=paths.session_file().exists())
+        self.sync_label.set_label(st.text)
+        for kind in ("error", "warning"):
+            self.sync_label.remove_css_class(kind)
+        if st.kind in ("signin", "failing"):
             self.sync_label.add_css_class("error")
-        elif s.get("last_success"):
-            txt = f"{n} logins · synced {_ago(s['last_success'])}"
-            self.sync_label.remove_css_class("error")
-        else:
-            txt = f"{n} logins · not synced yet"
-        self.sync_label.set_label(txt)
+        self.banner_action = st.action
+        if st.banner:
+            self.banner.set_title(st.banner)
+            self.banner.set_button_label("Sign In…" if st.action == "login" else "Sync Now")
+        self.banner.set_revealed(bool(st.banner))
+
+    def _banner_clicked(self, *_):
+        self.open_login() if self.banner_action == "login" else self.run_cli("sync", "--force")
+
+    def open_login(self):
+        """Start the sign-in window (a separate process, so a crash or a stuck network call can't
+        take this window down) and refresh when it ends."""
+        try:
+            proc = subprocess.Popen([sys.executable, "-m", "icp.cli.app", "login", "--gui"],
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
+        except OSError as e:
+            return self._toast(f"Could not start sign-in: {e}")
+        threading.Thread(target=lambda: (proc.wait(), GLib.idle_add(self._poll)),
+                         daemon=True).start()
 
     def run_cli(self, *args):
         self._toast(f"Running icp {' '.join(args)}…")
 
         def work():
             r = subprocess.run([sys.executable, "-m", "icp.cli.app", *args],
-                               capture_output=True, text=True)
+                               capture_output=True, text=True, stdin=subprocess.DEVNULL)
             GLib.idle_add(self._done, args, r)
-        import threading
         threading.Thread(target=work, daemon=True).start()
 
     def _done(self, args, r):
@@ -330,6 +404,7 @@ class Window(Adw.ApplicationWindow):
         self._toast(msg)
         if args[0] == "sync" and self.stack.get_visible_child_name() == "main":
             self.unlock()
+        self._refresh_sync()
         return False
 
 
@@ -361,10 +436,9 @@ class App(Adw.Application):
     def do_startup(self):
         Adw.Application.do_startup(self)
         from gi.repository import Gio
-        for name, fn in (("sync", lambda *_: self.props.active_window.run_cli("sync")),
-                         ("login", lambda *_: subprocess.Popen(
-                             [sys.executable, "-m", "icp.cli.app", "login", "--gui"])),
-                         ("mirror", lambda *_: self.props.active_window.run_cli("mirror")),
+        for name, fn in (("sync", lambda *_: self._window().run_cli("sync", "--force")),
+                         ("login", lambda *_: self._window().open_login()),
+                         ("mirror", lambda *_: self._window().run_cli("mirror")),
                          ("quit", lambda *_: self.quit())):
             act = Gio.SimpleAction.new(name, None)
             act.connect("activate", fn)

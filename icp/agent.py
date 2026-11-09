@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import gc
-import json
 import os
 import socket
 import struct
@@ -22,12 +21,11 @@ import sys
 import time
 from pathlib import Path
 
-from . import paths
+from . import framing, paths
 from .vault import host
 
 IDLE_LOCK = int(os.environ.get("ICP_IDLE_LOCK", str(15 * 60)))
 NEEDS_UNLOCK = {"match", "search", "totp"}
-MAX_FRAME = 1 << 20
 
 
 def socket_path() -> Path:
@@ -89,6 +87,7 @@ class Agent:
         if cmd == "status":
             from . import status
             return {"ok": True, "locked": self.locked, "sync": status.read(),
+                    "signed_in": paths.session_file().exists(),
                     "count": 0 if self.locked else len(self.store)}
         if cmd in NEEDS_UNLOCK and self.locked:
             return {"ok": False, "locked": True, "error": "locked"}
@@ -96,14 +95,6 @@ class Agent:
             self._fresh()
         return host.handle(req, self.store if not self.locked else host.CredentialStore([]),
                            self.aliases)
-
-
-async def _read_frame(reader: asyncio.StreamReader) -> dict | None:
-    head = await reader.readexactly(4)
-    (n,) = struct.unpack("<I", head)
-    if n > MAX_FRAME:
-        return None
-    return json.loads((await reader.readexactly(n)).decode())
 
 
 async def _client(agent: Agent, reader, writer) -> None:
@@ -115,7 +106,7 @@ async def _client(agent: Agent, reader, writer) -> None:
             return
         while True:
             try:
-                req = await _read_frame(reader)
+                req = await framing.aread(reader)
             except (asyncio.IncompleteReadError, ValueError):
                 return
             if req is None:
@@ -124,8 +115,7 @@ async def _client(agent: Agent, reader, writer) -> None:
                 resp = await agent.handle(req)
             except Exception as e:  # never kill the agent on one bad request
                 resp = {"ok": False, "error": f"{type(e).__name__}: {e}"}
-            out = json.dumps(resp).encode()
-            writer.write(struct.pack("<I", len(out)) + out)
+            writer.write(framing.pack(resp))
             await writer.drain()
     finally:
         writer.close()

@@ -11,9 +11,9 @@ from pathlib import Path
 
 from . import hosts
 from .cli import ui
-from .doctor import check_anisette, OK
+from .doctor import OK, anisette_run_command, check_anisette
 
-UNIT_DIR = Path.home() / ".config/systemd/user"
+UNIT_DIR = hosts.CFG / "systemd/user"
 
 
 def _units() -> dict[str, str]:
@@ -21,7 +21,7 @@ def _units() -> dict[str, str]:
     return {
         "icp-sync.service": (
             "[Unit]\nDescription=iCloud Passwords sync\n\n"
-            f"[Service]\nType=oneshot\nExecStart={py} -m icp.cli.app sync\n"),
+            f"[Service]\nType=oneshot\nExecStart={py} -m icp.cli.app sync --background\n"),
         "icp-sync.timer": (
             "[Unit]\nDescription=iCloud Passwords sync every 6 hours\n\n"
             "[Timer]\nOnBootSec=5min\nOnUnitActiveSec=6h\nRandomizedDelaySec=10min\n"
@@ -63,12 +63,17 @@ def run(args) -> int:
     ui.step("2/3 Anisette server")
     sev, msg, hint = check_anisette(args.anisette)
     ui.out(f"  {msg}")
-    if sev != OK and hint.startswith(("docker", "podman")):
-        if args.yes or ui.confirm_yn(f"  Start it now with `{hint}`? [y/N] "):
-            r = subprocess.run(hint.split())
-            ui.out("  started" if r.returncode == 0 else "  failed - run the command yourself")
+    runner = shutil.which("docker") or shutil.which("podman")
+    if sev == "fail" and "not reachable" in msg and runner:
+        cmd = anisette_run_command(Path(runner).name)
+        if args.yes or ui.confirm_yn(f"  Start it now with `{' '.join(cmd)}`? [y/N] "):
+            r = subprocess.run(cmd)
+            ui.out("  started (loopback only)" if r.returncode == 0
+                   else "  failed - run the command yourself")
         else:
-            ui.out(f"  Skipped. To start it: {hint}")
+            ui.out(f"  Skipped. To start it: {' '.join(cmd)}")
+    elif sev != OK and hint:
+        ui.out(f"  -> {hint}")
 
     ui.step("3/3 Background sync")
     if args.no_timer:

@@ -12,8 +12,24 @@ class TwoFactorUnavailable(GSAError):
     """2FA is required in an unattended run; no additional code was requested."""
 
 
+CODE_ATTEMPTS = 3   # a mistyped 2FA code may be retried this many times (never more)
+
+
+def _submit(submit, twofa: TwoFactorCallback, kind: str, notify) -> None:
+    """Ask for a code and submit it; a rejected code is asked for again (without re-sending one)."""
+    for attempt in range(CODE_ATTEMPTS):
+        try:
+            submit(twofa(kind))
+            return
+        except GSAError as e:
+            if e.kind != "code" or attempt == CODE_ATTEMPTS - 1:
+                raise
+            if notify:
+                notify("That code was not accepted - try again.")
+
+
 def authenticate(gsa: GSAClient, username: str, password: str,
-                 twofa: TwoFactorCallback, *, interactive: bool = True) -> dict:
+                 twofa: TwoFactorCallback, *, interactive: bool = True, notify=None) -> dict:
     """Return the decrypted server provisioning data (spd), handling 2FA transparently.
     `interactive=False` stops before requesting or prompting for a code. Apple can
     send a trusted-device code during the SRP exchange itself."""
@@ -31,12 +47,12 @@ def authenticate(gsa: GSAClient, username: str, password: str,
     dsid, idms = spd["adsid"], spd["GsIdmsToken"]
     if au == "secondaryAuth":
         gsa.trigger_sms_factor(dsid, idms)
-        gsa.submit_sms_factor(twofa("sms"), dsid, idms)
+        _submit(lambda c: gsa.submit_sms_factor(c, dsid, idms), twofa, "sms", notify)
     else:
         # Requesting another code would invalidate the one Apple already sent.
         if not code_sent:
             gsa.trigger_trusted_factor(dsid, idms)
-        gsa.submit_trusted_factor(twofa("trusted"), dsid, idms)
+        _submit(lambda c: gsa.submit_trusted_factor(c, dsid, idms), twofa, "trusted", notify)
 
     # Re-authenticate to obtain a PET for the now-trusted device.
     r, spd = gsa.authenticate(username, password, "re-auth after 2FA")

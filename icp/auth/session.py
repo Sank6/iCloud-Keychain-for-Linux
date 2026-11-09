@@ -6,13 +6,15 @@ import binascii
 import json
 import logging
 import os
+import time
 
 import nacl.exceptions
 import nacl.secret
 import nacl.utils
 
-from .. import paths
-from ..errors import AppleError
+from .. import account, keyring, paths
+from ..errors import SessionError
+from ..keyring import KeyringLocked, KeyringUnavailable  # noqa: F401 - re-exported
 
 logger = logging.getLogger(__name__)
 
@@ -21,13 +23,9 @@ _LABEL = "ApplePasswords-Linux master key"
 _KEY_SIZE = nacl.secret.SecretBox.KEY_SIZE
 
 
-class SessionError(AppleError):
-    """The stored session exists but cannot be read with the current master key."""
-
-
-class KeyringLocked(SessionError):
-    """The keyring is locked and the unlock prompt was dismissed. Deliberately NOT a reason to fall
-    back to a key file: that would mint a new key and make every stored file undecryptable."""
+class KeyLost(SessionError):
+    """Encrypted data exists but its key is missing or unusable. We refuse to mint a new key
+    (that would silently orphan the vault); `icp logout --reset-keys` starts over explicitly."""
 
 
 def _decode_key(stored: bytes | str | None) -> bytes | None:
@@ -43,41 +41,59 @@ def _decode_key(stored: bytes | str | None) -> bytes | None:
     return key if len(key) == _KEY_SIZE else None
 
 
+def _encrypted_files() -> list:
+    return [f for f in (paths.session_file(), paths.vault_file(), paths.aliases_file())
+            if f.exists() and f.stat().st_size > 0]
+
+
+def _refuse_new_key(where: str) -> None:
+    if _encrypted_files():
+        raise KeyLost(
+            f"the master key is missing from {where} but encrypted data exists "
+            f"({', '.join(f.name for f in _encrypted_files())}). Not creating a new key, because "
+            "that would make the vault unreadable. Restore the keyring entry (is the right "
+            "keyring unlocked?) or run `icp logout --reset-keys` to start over.")
+
+
+def _file_key() -> bytes | None:
+    f = paths.fallback_key_file()
+    return _decode_key(f.read_bytes()) if f.exists() else None
+
+
 def _key_from_secret_service() -> bytes | None:
+    """The keyring's key; None when there is no Secret Service at all. Raises KeyringLocked when
+    locked/dismissed and KeyLost when the entry is gone but data exists."""
     try:
-        import secretstorage
-    except Exception:
+        coll = keyring.open_collection()
+    except KeyringUnavailable as e:
+        logger.warning("%s; using key file fallback", e)
         return None
-    try:
-        conn = secretstorage.dbus_init()
-        coll = secretstorage.get_default_collection(conn)
-        if coll.is_locked() and coll.unlock():  # secretstorage: True means the prompt was dismissed
-            raise KeyringLocked("the keyring is locked - unlock it (login keyring) and try again")
-        unusable = 0
-        for item in coll.search_items(_ATTRS):
-            key = _decode_key(item.get_secret())
-            if key is not None:
-                return key
-            unusable += 1
-        if unusable:
-            logger.warning("keyring holds %d unusable master-key item(s); replacing them", unusable)
+    items = keyring.find(coll, _ATTRS)
+    for item in items:
+        key = _decode_key(item.get_secret())
+        if key is not None:
+            return key
+    if items:
+        logger.warning("keyring holds %d unusable master-key item(s)", len(items))
+    # A key from the 0600 file (an earlier run without a keyring) moves into the keyring as-is.
+    key = _file_key()
+    migrating = key is not None
+    if not migrating:
+        _refuse_new_key("the keyring")
         key = nacl.utils.random(_KEY_SIZE)
-        coll.create_item(_LABEL, _ATTRS, base64.b64encode(key), replace=True)
-        return key
-    except KeyringLocked:
-        raise
-    except Exception as e:  # dbus not running, no keyring, etc.
-        logger.warning("Secret Service unavailable (%s); using key file fallback", e)
-        return None
+    coll.create_item(_LABEL, _ATTRS, base64.b64encode(key), replace=True)
+    if migrating and any(_decode_key(i.get_secret()) == key for i in keyring.find(coll, _ATTRS)):
+        paths.fallback_key_file().unlink()   # read back OK: drop the less-safe plaintext copy
+        logger.warning("moved the master key from master.key into the keyring")
+    return key
 
 
 def _key_from_file() -> bytes:
     f = paths.fallback_key_file()
-    if f.exists():
-        key = _decode_key(f.read_bytes())
-        if key is not None:
-            return key
-        logger.warning("master key file %s is unusable; writing a fresh key", f)
+    key = _file_key()
+    if key is not None:
+        return key
+    _refuse_new_key(f"the key file {f.name} (and there is no Secret Service)")
     key = nacl.utils.random(_KEY_SIZE)
     _write_private(f, base64.b64encode(key))
     logger.warning("Stored master key at %s (0600) - less safe than the keyring", f)
@@ -89,15 +105,51 @@ def _master_key() -> bytes:
     return key if key is not None else _key_from_file()
 
 
+def reset_keys() -> list[str]:
+    """Explicit start-over: set aside (never delete) the encrypted files and forget the key.
+    Returns what was done, for display."""
+    done = []
+    stamp = int(time.time())
+    for f in _encrypted_files():
+        f.rename(f.with_name(f"{f.name}.lost-{stamp}"))
+        done.append(f"moved {f.name} -> {f.name}.lost-{stamp}")
+    try:
+        coll = keyring.open_collection()
+        for item in keyring.find(coll, _ATTRS):
+            item.delete()
+            done.append("removed master key from the keyring")
+    except keyring.KeyringError as e:
+        done.append(f"keyring not touched: {e}")
+    kf = paths.fallback_key_file()
+    if kf.exists():
+        kf.unlink()
+        done.append("removed master.key")
+    return done
+
+
 def _write_private(f, data: bytes) -> None:
-    """Write 0600 from creation - secrets must never exist world-readable, even briefly."""
-    fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    """Write 0600 from creation (secrets never exist world-readable) and atomically, so a crash or
+    a closed window mid-write can never leave a truncated session behind."""
+    tmp = f.with_name(f.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "wb") as fh:
         fh.write(data)
-    os.chmod(f, 0o600)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, f)
 
 
 def save(data: dict) -> None:
+    """Encrypt and store the session. The Apple ID password goes to the keyring (icp.account)
+    when that works and is then left out of the blob; otherwise it stays in the blob."""
+    data = dict(data)
+    user = data.get("username")
+    if user:
+        try:
+            account.save(user, data.get("password"))
+            data.pop("password", None)
+        except keyring.KeyringError as e:
+            logger.info("Apple ID not stored in the keyring (%s); password stays in session.enc", e)
     box = nacl.secret.SecretBox(_master_key())
     _write_private(paths.session_file(), box.encrypt(json.dumps(data).encode()))
 
@@ -108,14 +160,24 @@ def load() -> dict | None:
         return None
     box = nacl.secret.SecretBox(_master_key())
     try:
-        return json.loads(box.decrypt(f.read_bytes()).decode())
+        data = json.loads(box.decrypt(f.read_bytes()).decode())
     except nacl.exceptions.CryptoError as e:
         raise SessionError(
             f"cannot decrypt {f} - the master key no longer matches it (the keyring entry was "
-            "lost or replaced). Run `icp logout`, then `icp login` to sign in again.") from e
+            "lost or replaced). Run `icp logout --reset-keys`, then `icp login`.") from e
+    if data.get("username") and not data.get("password"):
+        user, pw = account.load(interactive=False)
+        if pw and user == data["username"]:
+            data["password"] = pw
+    return data
 
 
 def clear() -> None:
+    """Forget the session: the encrypted blob and the saved Apple ID/password in the keyring."""
     f = paths.session_file()
     if f.exists():
         f.unlink()
+    try:
+        account.forget()
+    except keyring.KeyringError:
+        pass

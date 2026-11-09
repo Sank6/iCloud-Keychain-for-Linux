@@ -19,6 +19,7 @@ import os
 import plistlib
 import uuid as _uuid
 
+from .. import net
 from ..errors import AppleError
 
 # RFC 5054 2048-bit group (N, g=2). Standard public constant.
@@ -202,12 +203,16 @@ class EscrowRecovery:
 
     def _invoke(self, command: str, request: dict) -> dict:
         """POST a single escrowproxy command. LIVE."""
-        import requests
         body = plistlib.dumps(request)
-        # verify=True: carries the PET + drives the irreversible flow, must not be MITM'd
-        resp = requests.post(f"{self.host}/escrowproxy/api/{command}",
-                             headers=self._headers(), data=body,
-                             auth=(self.email, self.pet), verify=True, timeout=self.timeout)
+        # verify=True: carries the PET + drives the irreversible flow, must not be MITM'd.
+        # retries=0 on purpose: a repeated recover call could spend another of the ~10 attempts.
+        try:
+            resp = net.request("post", f"{self.host}/escrowproxy/api/{command}",
+                               headers=self._headers(), data=body,
+                               auth=(self.email, self.pet), verify=True,
+                               timeout=(5, self.timeout))
+        except net.AppleNetError as e:
+            raise EscrowGateError(f"escrowproxy/{command}: {e}") from e
         data = plistlib.loads(resp.content)
         if not (200 <= resp.status_code < 300):
             raise EscrowGateError(f"escrowproxy/{command} HTTP {resp.status_code}: {data}")

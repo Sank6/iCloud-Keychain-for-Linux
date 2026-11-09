@@ -106,7 +106,8 @@ def write_launcher() -> Path:
     # the Rust agent when it has been built, else the Python one (same socket, same protocol)
     agent = f"{agent_path()}" if agent_path().exists() else f"{sys.executable} -m icp.agent"
     (d / "agent-cmd").write_text(agent + "\n")
-    (d / "sync-cmd").write_text(f"{sys.executable} -m icp.cli.app sync\n")
+    (d / "sync-cmd").write_text(f"{sys.executable} -m icp.cli.app sync --background\n")
+    (d / "login-cmd").write_text(f"{sys.executable} -m icp.cli.app login --gui\n")
     (d / "gui-cmd").write_text(f"{sys.executable} -m icp.gui\n")
     if shim_path().exists():
         return shim_path()

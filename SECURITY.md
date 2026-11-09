@@ -7,7 +7,8 @@ browser extension. This file says what that does and does not protect against.
 
 | What | Where | Protection |
 |---|---|---|
-| Apple session tokens, saved Apple ID password | `~/.config/icp/session.enc` | libsodium secretbox; key in the login keyring |
+| Apple session tokens | `~/.config/icp/session.enc` | libsodium secretbox; key in the login keyring |
+| Apple ID + saved password | login keyring item `application=icp type=apple-account` (no keyring: inside `session.enc`) | keyring; shown in Seahorse; `icp logout` removes it |
 | Decrypted logins | `~/.config/icp/vault.enc` | same key, file mode 0600 |
 | That key | login keyring (Secret Service) | unlocked with your login |
 | Same key, only when there is no Secret Service at all | `~/.config/icp/master.key` (0600) | file permissions only (doctor warns) |
@@ -24,7 +25,12 @@ browser extension. This file says what that does and does not protect against.
   allowed in the host manifest.
 - Filling into the wrong site: matching uses the Public Suffix List, so shared suffixes
   (`github.io`, `co.uk`) never link two sites. Related-site sets are a small hand-curated list.
-- A dismissed keyring prompt wiping your vault: it now raises instead of minting a new key.
+- A dismissed or missing keyring entry wiping your vault: it raises instead of minting a new key, and
+  an undecryptable vault is never deleted (`icp logout --reset-keys` is the explicit way out).
+- Other machines on your network using the anisette server: it must be published on 127.0.0.1 only
+  (`icp doctor` warns when it listens on 0.0.0.0; see `packaging/anisette/`).
+- Hammering Apple: one HTTP layer with per-host spacing, no retries on 401/403, and a circuit
+  breaker that stops unattended calls after repeated errors.
 
 ## What it does NOT defend against
 

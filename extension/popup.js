@@ -82,11 +82,23 @@ function ago(ts) {
 }
 
 // One line under the header: when the vault last synced, or what is wrong and how to fix it.
+// "Sign-in needed" (no session, or Apple rejected it) gets a button that opens the sign-in window.
 function renderSync(resp) {
   const el = document.getElementById("sync");
   const sync = (resp && resp.ok && resp.sync) || {};
+  const signedOut = resp && resp.ok && resp.signed_in === false;
   el.className = "";
-  if (sync.failures) {
+  el.textContent = "";
+  if (signedOut || sync.needs_login) {
+    el.className = "bad";
+    el.append(signedOut ? "Not signed in to iCloud. " : "Sign-in needed. ");
+    const b = document.createElement("button");
+    b.textContent = "Sign in\u2026";
+    b.style.cssText = "border:0;border-radius:6px;padding:3px 8px;background:var(--accent);color:#fff;font:inherit;cursor:pointer";
+    b.onclick = () => { send({ cmd: "login" }); window.close(); };
+    el.appendChild(b);
+    el.title = sync.last_error || "";
+  } else if (sync.failures) {
     el.className = "bad";
     el.textContent = `Sync failing${sync.hint ? ": " + sync.hint : ""}`;
     el.title = sync.last_error || "";
@@ -114,6 +126,7 @@ async function main() {
     b.style.cssText = "border:0;border-radius:8px;padding:8px 12px;background:var(--accent);color:#fff;font:inherit;cursor:pointer";
     b.onclick = async () => { b.disabled = true; await send({ cmd: "unlock" }); location.reload(); };
     statusEl.appendChild(b);
+    renderSync(await send({ cmd: "status" }));
     return;
   }
   const domain = await activeDomain();

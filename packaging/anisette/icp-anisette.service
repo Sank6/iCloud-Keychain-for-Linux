@@ -1,0 +1,18 @@
+# systemd user unit for the anisette server when you use Docker or Podman without Quadlet.
+# Install:  mkdir -p ~/.config/systemd/user && cp icp-anisette.service ~/.config/systemd/user/
+#           systemctl --user daemon-reload && systemctl --user enable --now icp-anisette.service
+# Replace RUNNER with docker or podman (rootless podman needs no sudo; Docker needs the docker group).
+[Unit]
+Description=Anisette server for icp (loopback only)
+After=network-online.target
+
+[Service]
+Environment=RUNNER=podman
+ExecStartPre=-/usr/bin/env ${RUNNER} rm -f icp-anisette
+ExecStart=/usr/bin/env ${RUNNER} run --rm --name icp-anisette -p 127.0.0.1:6969:6969 -v icp-anisette-data:/home/Chester/.config/anisette-v3/lib/ docker.io/dadoum/anisette-v3-server:latest
+ExecStop=/usr/bin/env ${RUNNER} stop icp-anisette
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

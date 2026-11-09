@@ -155,10 +155,15 @@ fn handle(state: &Mutex<State>, req: &Value) -> Value {
             let sync = fs::read_to_string(config_file("sync-status.json")).ok()
                 .and_then(|s| serde_json::from_str::<Value>(&s).ok()).unwrap_or(json!({}));
             return json!({"ok": true, "locked": st.data.is_none(), "sync": sync,
+                          "signed_in": config_file("session.enc").exists(),
                           "count": st.data.as_ref().map_or(0, |d| d.creds.len())});
         }
         "open_app" => {
             spawn_from(&data_dir().join("gui-cmd"));
+            return json!({"ok": true});
+        }
+        "login" => {
+            spawn_login();
             return json!({"ok": true});
         }
         "chose" => {
@@ -168,7 +173,7 @@ fn handle(state: &Mutex<State>, req: &Value) -> Value {
             return json!({"ok": true});
         }
         "match" | "search" | "totp" => {}
-        other => return json!({"ok": false, "error": format!("unknown cmd {:?}", other)}),
+        other => return json!({"ok": false, "error": format!("unknown cmd '{}'", other)}),
     }
     // secret-bearing commands need an unlocked agent
     if st.data.is_none() { return json!({"ok": false, "locked": true, "error": "locked"}); }
@@ -216,6 +221,38 @@ fn spawn_from(file: &PathBuf) {
         .stderr(Stdio::null()).spawn();
 }
 
+/// Argv for the sync command: the configured one, with `--background` ensured so an unattended
+/// run can never sign in with the password or prompt for 2FA.
+fn background_sync_cmd(line: &str) -> Vec<String> {
+    let mut parts: Vec<String> = line.split_whitespace().map(String::from).collect();
+    if !parts.is_empty() && !parts.iter().any(|p| p == "--background") { parts.push("--background".into()); }
+    parts
+}
+
+/// Argv for the sign-in window: `login-cmd` if `icp setup` wrote one, else derived from `sync-cmd`
+/// (everything before the `sync` word, then `login --gui`).
+fn login_cmd(login_line: Option<&str>, sync_line: Option<&str>) -> Vec<String> {
+    if let Some(l) = login_line {
+        let v: Vec<String> = l.split_whitespace().map(String::from).collect();
+        if !v.is_empty() { return v; }
+    }
+    let mut v: Vec<String> = Vec::new();
+    for p in sync_line.unwrap_or("").split_whitespace() {
+        if p == "sync" { v.push("login".into()); v.push("--gui".into()); return v; }
+        v.push(p.to_string());
+    }
+    Vec::new()
+}
+
+fn spawn_login() {
+    let argv = login_cmd(fs::read_to_string(data_dir().join("login-cmd")).ok().as_deref(),
+                         fs::read_to_string(data_dir().join("sync-cmd")).ok().as_deref());
+    if let Some((prog, rest)) = argv.split_first() {
+        let _ = Command::new(prog).args(rest).stdin(Stdio::null()).stdout(Stdio::null())
+            .stderr(Stdio::null()).spawn();
+    }
+}
+
 /// Kick off a detached `icp sync` when the vault is old, with exponential back-off after failures
 /// (same rules as the Python host). Disabled by ICP_SYNC_MAX_AGE=0.
 fn maybe_trigger_sync() {
@@ -227,12 +264,42 @@ fn maybe_trigger_sync() {
     if attempt.exists() && now() - mtime(&attempt) < 300.0 { return; }
     if let Some(st) = fs::read_to_string(config_file("sync-status.json")).ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok()) {
+        // sign-in needed: nothing an unattended sync can fix (the UIs offer "Sign in")
+        if st.get("needs_login").and_then(Value::as_bool).unwrap_or(false) { return; }
         let fails = st.get("failures").and_then(Value::as_i64).unwrap_or(0);
         let last = st.get("last_attempt").and_then(Value::as_f64).unwrap_or(0.0);
         if fails > 0 && now() - last < (900.0 * 2f64.powi((fails - 1).min(20) as i32)).min(86400.0) { return; }
     }
     let _ = fs::write(&attempt, b"");
-    spawn_from(&data_dir().join("sync-cmd"));
+    if let Ok(line) = fs::read_to_string(data_dir().join("sync-cmd")) {
+        let argv = background_sync_cmd(&line);
+        if let Some((prog, rest)) = argv.split_first() {
+            let _ = Command::new(prog).args(rest).stdin(Stdio::null()).stdout(Stdio::null())
+                .stderr(Stdio::null()).spawn();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_cmd_always_background() {
+        assert_eq!(background_sync_cmd("python -m icp.cli.app sync"),
+                   vec!["python", "-m", "icp.cli.app", "sync", "--background"]);
+        assert_eq!(background_sync_cmd("x sync --background").len(), 3);
+        assert!(background_sync_cmd("  ").is_empty());
+    }
+
+    #[test]
+    fn login_cmd_from_file_or_derived_from_sync_cmd() {
+        assert_eq!(login_cmd(Some("py -m icp.cli.app login --gui\n"), None),
+                   vec!["py", "-m", "icp.cli.app", "login", "--gui"]);
+        assert_eq!(login_cmd(None, Some("/v/bin/python -m icp.cli.app sync\n")),
+                   vec!["/v/bin/python", "-m", "icp.cli.app", "login", "--gui"]);
+        assert!(login_cmd(None, None).is_empty());
+    }
 }
 
 // ---- framing & server ----------------------------------------------------------------------

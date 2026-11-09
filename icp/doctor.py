@@ -3,14 +3,17 @@ Never prompts, never writes, never contacts Apple (it only pokes the local anise
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import shutil
 import subprocess
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
-from . import hosts, paths, status
-from .const import DEFAULT_ANISETTE_URL, EXTENSION_ID
+from . import config, hosts, keyring, paths, ratelimit, status
+from .auth import session
+from .const import ANISETTE_IMAGE, ANISETTE_PORT, EXTENSION_ID
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 _MARK = {OK: "\033[32m✓\033[0m", WARN: "\033[33m!\033[0m", FAIL: "\033[31m✗\033[0m"}
@@ -24,32 +27,96 @@ def _age(ts: float) -> str:
     return "just now"
 
 
+def anisette_run_command(runner: str) -> list[str]:
+    """Start the anisette server published on loopback only (never 0.0.0.0: it is unauthenticated
+    and anyone on the LAN could use it)."""
+    return [runner, "run", "-d", "--restart=always", "--name", "icp-anisette",
+            "-p", f"127.0.0.1:{ANISETTE_PORT}:{ANISETTE_PORT}", ANISETTE_IMAGE]
+
+
+def listening_exposed(port: int, proc_dir: str = "/proc/net") -> list[str]:
+    """Non-loopback local addresses with a TCP listener on `port` (read from /proc, no network).
+    `0.0.0.0` / `::` mean the service is reachable from the whole LAN."""
+    out = []
+    for name, v6 in (("tcp", False), ("tcp6", True)):
+        try:
+            lines = Path(proc_dir, name).read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            f = line.split()
+            if len(f) < 4 or f[3] != "0A":  # 0A = LISTEN
+                continue
+            addr_hex, port_hex = f[1].rsplit(":", 1)
+            if int(port_hex, 16) != port:
+                continue
+            raw = bytes.fromhex(addr_hex)
+            if v6:
+                # 4 little-endian 32-bit words
+                raw = b"".join(raw[i:i + 4][::-1] for i in range(0, 16, 4))
+                ip = ipaddress.IPv6Address(raw)
+                ip = ip.ipv4_mapped or ip
+            else:
+                ip = ipaddress.IPv4Address(raw[::-1])
+            if not ip.is_loopback:
+                out.append("0.0.0.0" if ip == ipaddress.IPv4Address(0) else
+                           "::" if ip == ipaddress.IPv6Address(0) else str(ip))
+    return sorted(set(out))
+
+
 def check_anisette(url: str | None):
     import requests
-    url = url or os.environ.get("ICP_ANISETTE_URL") or DEFAULT_ANISETTE_URL
+    url = config.anisette_url(url)
+    port = urlparse(url).port or ANISETTE_PORT
+    runner = shutil.which("docker") or shutil.which("podman")
+    hint = (" ".join(anisette_run_command(os.path.basename(runner))) if runner
+            else "install Docker or Podman (see packaging/anisette/README.md)")
     try:
         r = requests.get(url, timeout=3)
-        if r.ok:
-            return OK, f"anisette server reachable at {url}", ""
-        return FAIL, f"anisette server at {url} answered HTTP {r.status_code}", ""
     except Exception as e:
-        runner = shutil.which("docker") or shutil.which("podman")
-        hint = (f"start it: {os.path.basename(runner)} run -d --restart=always -p 6969:6969 "
-                "dadoum/anisette-v3-server:latest") if runner else "install Docker or Podman"
         return FAIL, f"anisette server not reachable at {url} ({type(e).__name__})", hint
+    if not r.ok:
+        return FAIL, f"anisette server at {url} answered HTTP {r.status_code}", ""
+    if not config.is_loopback(url):
+        return WARN, f"anisette server {url} is not on this machine", \
+            "a remote server sees your device identity; prefer a loopback-only local one"
+    exposed = listening_exposed(port)
+    if exposed:
+        return WARN, (f"anisette server on port {port} is listening on {', '.join(exposed)} "
+                      "- reachable from your network"), \
+            ("re-create it bound to loopback: "
+             f"{os.path.basename(runner) if runner else 'docker'} rm -f <name>; then "
+             f"{hint if runner else 'see packaging/anisette/'}")
+    return OK, f"anisette server reachable at {url} (loopback only)", ""
 
 
 def check_keyring():
+    """Read-only: never prompts, never creates the master key."""
     try:
-        import secretstorage
-        conn = secretstorage.dbus_init()
-        coll = secretstorage.get_default_collection(conn)
-        if coll.is_locked():
-            return WARN, "keyring is locked (it will ask to unlock on first use)", ""
-        return OK, "keyring (Secret Service) is available and unlocked", ""
-    except Exception as e:
-        return WARN, f"Secret Service unavailable ({e}); the 0600 key file fallback is used", \
+        coll = keyring.open_collection(interactive=False)
+    except keyring.KeyringLocked:
+        return WARN, "keyring is locked (it will ask to unlock on first use)", \
+            "unlock it with your login password, or `icp mirror`"
+    except keyring.KeyringUnavailable as e:
+        return WARN, f"{e}; the 0600 key file fallback is used", \
             "log in to a desktop session with gnome-keyring running"
+    if keyring.find(coll, {"application": "icp", "type": "master-key"}):
+        return OK, "keyring (Secret Service) is unlocked and holds the vault key", ""
+    if session._encrypted_files():
+        return FAIL, "keyring has no vault key but encrypted data exists (wrong collection?)", \
+            "unlock the right keyring, or `icp logout --reset-keys` to start over"
+    return OK, "keyring (Secret Service) is available (no vault key yet)", ""
+
+
+def check_signin():
+    st = ratelimit.load()
+    if st.get("needs_login"):
+        return FAIL, f"sign-in needed: {st.get('last_error') or 'Apple rejected the saved session'}", \
+            "run `icp login --gui` (or use the button in the Passwords app)"
+    circuit = ratelimit.circuit_status()
+    if circuit:
+        return WARN, f"unattended Apple calls paused: {circuit}", "an interactive `icp login` resets it"
+    return OK, "no sign-in problem recorded", ""
 
 
 def check_files():
@@ -79,6 +146,8 @@ def check_sync_status():
     if s.get("failures"):
         msg = f"last sync failed ({s['failures']} in a row): {s.get('last_error', '')}"
         return FAIL, msg, s.get("hint", "")
+    if not s.get("last_success"):
+        return WARN, "no successful sync recorded yet", "run `icp sync`"
     return OK, f"last successful sync {_age(s['last_success'])}", ""
 
 
@@ -111,7 +180,7 @@ def check_notify():
 
 
 def run(anisette_url: str | None = None) -> int:
-    results = [check_anisette(anisette_url), check_keyring(), *check_files(),
+    results = [check_anisette(anisette_url), check_keyring(), check_signin(), *check_files(),
                check_sync_status(), *check_hosts(), check_timer(), check_notify()]
     for sev, msg, hint in results:
         print(f" {_MARK[sev]} {msg}")

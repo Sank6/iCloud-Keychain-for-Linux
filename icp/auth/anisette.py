@@ -1,12 +1,14 @@
 """Anisette client - fetches the "machine validation data" (X-Apple-I-MD / X-Apple-I-MD-M) that
 GrandSlam auth requires from an external anisette server run locally."""
 
-import os
+import logging
 
 import requests
 
-from ..const import DEFAULT_ANISETTE_URL
+from .. import config
 from ..errors import AppleError
+
+logger = logging.getLogger(__name__)
 
 
 class AnisetteError(AppleError):
@@ -28,7 +30,10 @@ class Anisette:
     )
 
     def __init__(self, url: str | None = None):
-        self.url = (url or os.environ.get("ICP_ANISETTE_URL") or DEFAULT_ANISETTE_URL).rstrip("/")
+        self.url = config.anisette_url(url)
+        if not config.is_loopback(self.url):
+            logger.warning("anisette server %s is not on this machine; it sees your device "
+                           "identity. Prefer a loopback-only local server.", self.url)
 
     def headers(self) -> dict:
         try:
@@ -38,8 +43,8 @@ class Anisette:
         except requests.RequestException as e:
             raise AnisetteError(
                 f"Could not reach anisette server at {self.url}: {e}\n"
-                "Start one, e.g.: docker run -d -p 6969:6969 dadoum/anisette-server:latest\n"
-                "or set ICP_ANISETTE_URL to a running instance."
+                "Start one bound to loopback (see `icp doctor`), or set ICP_ANISETTE_URL / "
+                "anisette_url in ~/.config/icp/config.toml."
             ) from e
 
         out = {k: data[k] for k in self._KEYS if k in data}

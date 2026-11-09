@@ -18,15 +18,28 @@ class StatusTests(unittest.TestCase):
         self.addCleanup(p.stop)
         self.addCleanup(self.tmp.cleanup)
 
-    def test_failures_count_and_reset(self):
+    def test_state_publishes_display_file(self):
+        from icp import ratelimit
+        st = {}
+        ratelimit.record_failure(st, "sign-in: init failed: ec=-80045", auth=True)
+        shown = status.read()
+        self.assertEqual(shown["failures"], 1)
+        self.assertTrue(shown["needs_login"])
+        self.assertIn("icp login", shown["hint"])
+        ratelimit.record_success(st)
+        shown = status.read()
+        self.assertEqual((shown["failures"], shown["last_error"], shown["needs_login"]),
+                         (0, "", False))
+        self.assertNotIn("circuit", shown)
+
+    def test_notifies_once_at_threshold(self):
         with mock.patch.object(status, "notify") as n:
-            for _ in range(status.NOTIFY_AFTER):
-                status.record_failure("sign-in: init failed: ec=-80045")
-            self.assertEqual(status.read()["failures"], status.NOTIFY_AFTER)
-            self.assertEqual(n.call_count, 1)  # notified once, at the threshold
-            status.record_success()
-        self.assertEqual(status.read()["failures"], 0)
-        self.assertEqual(status.read()["last_error"], "")
+            status.maybe_notify({"failures": 1})
+            status.maybe_notify({"failures": status.NOTIFY_AFTER})
+            status.maybe_notify({"failures": status.NOTIFY_AFTER + 1})
+            self.assertEqual(n.call_count, 1)
+            status.maybe_notify({"failures": 1, "needs_login": True, "hint": "x"})
+            self.assertEqual(n.call_count, 2)
 
     def test_hint(self):
         self.assertIn("icp login", status.explain("not signed in - run: icp login"))

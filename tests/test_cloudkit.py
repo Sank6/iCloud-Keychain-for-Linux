@@ -162,13 +162,14 @@ class ContainerHeaderTests(unittest.TestCase):
                     return {"cloudKitUserId": "_ckuser123"}
             return R()
 
-        orig = ck.requests.post
-        ck.requests.post = fake_post
+        import requests as _rq
+        orig = _rq.post
+        _rq.post = fake_post
         try:
             uid = ck.ck_app_init(ck.CUTTLEFISH_CONTAINER, ck.CUTTLEFISH_BUNDLE,
                                  "16300000000", "MME-AUTH-TOKEN", _Anis())
         finally:
-            ck.requests.post = orig
+            _rq.post = orig
 
         self.assertEqual(uid, "_ckuser123")
         self.assertEqual(captured["url"], ck.CK_APP_INIT_URL)
