@@ -21,7 +21,7 @@ import re
 import struct
 import sys
 
-from .. import totp as totp_codes
+from .. import choices, psl, related, totp as totp_codes
 
 
 @dataclasses.dataclass(frozen=True)
@@ -80,16 +80,19 @@ def _normalize_host(value: str) -> str:
 def domains_match(page: str, stored: str) -> bool:
     """True if a stored item's domain should autofill on `page`.
 
-    Matches exact host, and either being a sub-domain of the other (so `example.com` fills on
-    `login.example.com` and vice-versa). Conservative: requires a dotted-boundary suffix so
-    `notexample.com` never matches `example.com`.
+    Matches the exact host, or a sub-domain relationship in either direction (`example.com` fills
+    on `login.example.com` and vice versa), but only within one registrable domain: a shared public
+    suffix (`co.uk`, `github.io`) never links two sites, and IP addresses only match exactly.
     """
     p, s = _normalize_host(page), _normalize_host(stored)
     if not p or not s:
         return False
     if p == s:
         return True
-    return p.endswith("." + s) or s.endswith("." + p)
+    if psl.is_ip(p) or psl.is_ip(s):
+        return False
+    shorter, longer = (s, p) if p.endswith("." + s) else (p, s) if s.endswith("." + p) else (None, None)
+    return shorter is not None and not psl.is_public_suffix(shorter)
 
 
 def match_aliases(page_domain: str, aliases: list) -> list:
@@ -274,15 +277,17 @@ class CredentialStore:
             if domains_match(page_domain, c.domain):
                 return 0 if _normalize_host(page_domain) == _normalize_host(c.domain) else 1
             stored = _normalize_host(c.domain)
-            if ("." not in stored) and _name_matches_host(page_domain, c.title or c.domain):
+            if related.related(page_domain, stored):
                 return 2
+            if ("." not in stored) and _name_matches_host(page_domain, c.title or c.domain):
+                return 3
             return None
 
         ranked = [(rank, c) for c in self._creds if (rank := match_rank(c)) is not None]
         # exact-host matches first, then parent/subdomain, then label-only fallbacks; within a
         # tier, most-recently-used first, then title for a stable order.
         ranked.sort(key=lambda rc: (rc[0], -rc[1].recency, rc[1].title, rc[1].username))
-        return [c for _, c in ranked]
+        return choices.preferred_first(page_domain, [c for _, c in ranked])
 
     @classmethod
     def from_items(cls, items) -> "CredentialStore":
@@ -361,6 +366,28 @@ def handle(request: dict, store: CredentialStore, aliases: list | None = None) -
     cmd = request.get("cmd")
     if cmd == "ping":
         return {"ok": True, "count": len(store)}
+    if cmd == "chose":
+        domain, username = request.get("domain", ""), request.get("username", "")
+        if domain and username:
+            choices.record(domain, username)
+        return {"ok": True}
+    if cmd == "search":
+        q = str(request.get("query", "")).strip().lower()
+        if len(q) < 2:
+            return {"ok": True, "credentials": []}
+        hits = [c for c in store.all()
+                if q in f"{c.title} {c.domain} {c.username}".lower()]
+        hits.sort(key=lambda c: -c.recency)
+        return {"ok": True, "credentials": [c.wire_dict() for c in hits[:40]]}
+    if cmd == "open_app":
+        import subprocess
+        subprocess.Popen([sys.executable, "-m", "icp.gui"], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+        return {"ok": True}
+    if cmd == "status":
+        from .. import status
+        return {"ok": True, "count": len(store), "sync": status.read()}
     if cmd == "match":
         domain = request.get("domain", "")
         if not domain:
@@ -409,6 +436,13 @@ def _maybe_trigger_sync() -> None:
         attempt = paths.sync_attempt_file()
         if attempt.exists() and (time.time() - attempt.stat().st_mtime) < 300:
             return  # already triggered recently
+        # Back off after failures (15 min doubling, capped at 24 h) so a broken sign-in isn't
+        # retried against Apple every few minutes.
+        from .. import status
+        st = status.read()
+        fails = int(st.get("failures", 0))
+        if fails and time.time() - st.get("last_attempt", 0) < min(900 * 2 ** (fails - 1), 86400):
+            return
         attempt.touch()
         subprocess.Popen(
             [sys.executable, "-m", "icp.cli.app", "sync"],

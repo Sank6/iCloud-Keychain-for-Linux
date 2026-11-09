@@ -16,7 +16,12 @@ def warn(msg: str) -> None:
     print(f"warning: {msg}", file=sys.stderr)
 
 
+last_error: str | None = None  # most recent err() text, read by `icp sync` for its status file
+
+
 def err(msg: str) -> None:
+    global last_error
+    last_error = msg
     print(f"error: {msg}", file=sys.stderr)
 
 

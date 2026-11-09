@@ -20,3 +20,6 @@ icp = "icp.cli.app:main"
 
 [tool.setuptools.packages.find]
 include = ["icp*"]
+
+[tool.setuptools.package-data]
+icp = ["data/*.dat"]

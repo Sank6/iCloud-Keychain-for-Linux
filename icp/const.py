@@ -18,3 +18,10 @@ GSA_CLIENT_INFO = (
 DEFAULT_ANISETTE_URL = "http://localhost:6969"
 
 GSA_ENDPOINT = "https://gsa.apple.com/grandslam/GsService2"
+
+# Browser-extension id. Fixed because extension/manifest.json carries the matching public `key`
+# (the private key is extension.pem, which must never be committed).
+EXTENSION_ID = "oienjgojkmebeibfajgflpaajlaaolkg"
+# Firefox add-on id; must match browser_specific_settings.gecko.id in the manifest.
+GECKO_ID = "icp-linux@local"
+HOST_NAME = "org.icp.native"

@@ -509,6 +509,7 @@ def _join_and_sync(s: dict, device, anisette, username: str, password: str) -> i
             ui.err(f"sync failed: {e}")
             return 1
         ui.out(f"Synced {n} credential(s) into the vault.")
+        _mirror_vault(interactive=sys.stdin.isatty())
         return 0
 
     escrow_host = (s.get("webservices") or {}).get("keychainsync")
@@ -579,6 +580,22 @@ def _join_and_sync(s: dict, device, anisette, username: str, password: str) -> i
 
 
 def cmd_sync(args) -> int:
+    """Run a sync and record the outcome in the status file (see icp/status.py)."""
+    from .. import status
+    ui.last_error = None
+    try:
+        rc = _sync(args)
+    except Exception as e:  # recorded, then re-raised so the traceback is still visible
+        status.record_failure(str(e))
+        raise
+    if rc != 0:
+        status.record_failure(ui.last_error or f"sync exited with {rc}")
+    elif ui.last_error is None:
+        status.record_success()
+    return rc
+
+
+def _sync(args) -> int:
     """Fetch the keychain zones and decrypt them into the vault (requires a prior join).
 
     Guarded by a non-blocking file lock so the periodic background trigger and a manual run
@@ -690,6 +707,40 @@ def cmd_logout(args) -> int:
     return 0
 
 
+def _mirror_vault(*, interactive: bool):
+    """Best-effort: copy the vault's logins into the Secret Service (never fails a sync)."""
+    from .. import mirror
+    from ..vault.store import load_vault
+    try:
+        res = mirror.sync_to_keyring(load_vault().all(), interactive=interactive)
+    except Exception as e:
+        ui.warn(f"mirror failed: {e}")
+        return None
+    ui.out(str(res))
+    return res
+
+
+def cmd_mirror(args) -> int:
+    """Mirror the existing vault into the keyring now, without contacting Apple."""
+    res = _mirror_vault(interactive=True)
+    return 1 if res is None or (res.skipped and "dismissed" in res.skipped) else 0
+
+
+def cmd_gui(args) -> int:
+    from ..gui.app import main as gui_main
+    return gui_main()
+
+
+def cmd_doctor(args) -> int:
+    from .. import doctor
+    return doctor.run(args.anisette)
+
+
+def cmd_setup(args) -> int:
+    from .. import setup
+    return setup.run(args)
+
+
 def main(argv=None) -> int:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     p = argparse.ArgumentParser(
@@ -721,6 +772,21 @@ def main(argv=None) -> int:
 
     sub.add_parser("sync", help="re-fetch and decrypt the keychain into the vault"
                    ).set_defaults(func=cmd_sync)
+
+    sub.add_parser("mirror", help="copy logins into the system keyring (shows in Seahorse)"
+                   ).set_defaults(func=cmd_mirror)
+
+    sub.add_parser("gui", help="open the Passwords window (GTK)").set_defaults(func=cmd_gui)
+
+    sub.add_parser("doctor", help="check that everything needed for autofill is working"
+                   ).set_defaults(func=cmd_doctor)
+
+    up = sub.add_parser("setup", help="register the browser host, anisette check, sync timer")
+    up.add_argument("-y", "--yes", action="store_true", help="don't ask before starting things")
+    up.add_argument("--no-timer", action="store_true", help="don't install the systemd timer")
+    up.add_argument("--extension-id", action="append",
+                    help="also allow this extension id (e.g. an unpacked build with another id)")
+    up.set_defaults(func=cmd_setup)
 
     op = sub.add_parser("logout", help="clear the stored session")
     op.add_argument("--wipe-device", action="store_true", help="also remove the device identity")

@@ -1,0 +1,22 @@
+[package]
+name = "icp-agent"
+version = "0.1.0"
+edition = "2021"
+description = "Long-running icp agent: holds the decrypted vault in locked memory and serves the native-messaging shim"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+crypto_secretbox = "0.1"
+base64 = "0.22"
+hmac = "0.12"
+sha1 = "0.10"
+sha2 = "0.10"
+zeroize = { version = "1", features = ["derive"] }
+libc = "0.2"
+secret-service = { version = "5", features = ["rt-async-io-crypto-rust"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

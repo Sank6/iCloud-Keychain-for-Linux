@@ -2,20 +2,53 @@
   "manifest_version": 3,
   "name": "Apple Passwords",
   "version": "0.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3jbdeLZSq2cJZAM+qCPklFYBMA0lwJ/2sivsDndyQGHiCUtXikguFEgbjmQlzkSc2pUBKzV7DjNByWnT6dSL79H07tY/qMkqAdBxDsWZox/qs3gy2AL5OjH3KBbr4n0rc9w8z+qqbMC1vU/2Cxw/blbDVXCW2KRlGwblrfOm2VFhLiSNFd5dV2JskvqRsWK9ey4d/BvE9owkW4SDa3eKe1ZkbfNA09Fv8KiGkodfyM/6eXU7VlQdRCOac8R/c962hTUf6CNwVUzRtgZiFezR0mwBXgwEzuUcO/SiNJvWyhcoK/fJ8QOJxCCaE/1SyJM12bnFHzy9FhShbK+jkZMsUQIDAQAB",
   "description": "Read-only iCloud Keychain autofill for Linux, via a native host.",
-  "permissions": ["nativeMessaging", "activeTab", "scripting", "storage"],
-  "host_permissions": ["http://*/*", "https://*/*"],
+  "permissions": [
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
   "browser_specific_settings": {
-    "gecko": { "id": "icp-linux@local", "strict_min_version": "115.0" }
+    "gecko": {
+      "id": "icp-linux@local",
+      "strict_min_version": "115.0"
+    }
   },
-  "background": { "service_worker": "background.js", "scripts": ["background.js"] },
-  "action": { "default_popup": "popup.html", "default_title": "Apple Passwords" },
+  "background": {
+    "service_worker": "background.js",
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Apple Passwords",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png"
+    }
+  },
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["content.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle",
       "all_frames": true
     }
-  ]
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
 }

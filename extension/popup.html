@@ -4,68 +4,69 @@
   <meta charset="utf-8">
   <style>
     :root {
-      --ink: #1d1d1f;
-      --muted: #86868b;
-      --line: #e8e8ed;
-      --hover: #f5f5f7;
-      --accent: #0071e3;
+      --bg: #fff; --ink: #1d1d1f; --muted: #86868b; --line: #e8e8ed; --hover: #f2f2f7;
+      --accent: #0071e3; --bad: #d70015; --field: #efeff4;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #2c2c2e; --ink: #f5f5f7; --muted: #98989d; --line: #3a3a3c; --hover: #3a3a3c;
+              --accent: #0a84ff; --bad: #ff6961; --field: #3a3a3c; }
     }
     * { box-sizing: border-box; }
-    body {
-      font: 13px -apple-system, system-ui, "Segoe UI", sans-serif;
-      width: 300px; margin: 0; background: #fff; color: var(--ink);
-    }
-    header {
-      display: flex; align-items: baseline; justify-content: space-between;
-      padding: 14px 16px 10px;
-    }
-    header h1 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: -.01em; }
+    body { font: 13px -apple-system, system-ui, "Segoe UI", Ubuntu, sans-serif; width: 320px; margin: 0;
+           background: var(--bg); color: var(--ink); }
+    header { display: flex; align-items: center; gap: 8px; padding: 12px 14px 8px; }
+    header svg { width: 16px; height: 16px; color: var(--muted); }
+    header h1 { font-size: 14px; font-weight: 600; margin: 0; flex: 1; }
     header .count { font-size: 11px; color: var(--muted); }
-
-    #status {
-      padding: 0 16px 10px; color: var(--muted); font-size: 12px;
-      border-bottom: 1px solid var(--line);
-    }
-    #status .err { color: #d70015; }
-
-    #list { padding: 6px; max-height: 360px; overflow-y: auto; }
-    #list:empty::after {
-      content: "No saved logins for this site";
-      display: block; padding: 22px 10px; text-align: center;
-      color: var(--muted); font-size: 12px;
-    }
-
-    .cred {
-      display: flex; align-items: center; gap: 10px;
-      padding: 9px 10px; border-radius: 8px; cursor: pointer;
-    }
-    .cred:hover { background: var(--hover); }
-    .cred .avatar {
-      width: 28px; height: 28px; flex: none; border-radius: 6px;
-      display: grid; place-items: center; font-weight: 600; font-size: 13px;
-      text-transform: uppercase; color: var(--muted);
-      background: var(--hover); border: 1px solid var(--line);
-    }
-    .cred:hover .avatar { background: #fff; }
-    .cred .meta { min-width: 0; flex: 1; }
-    .cred .u { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .cred .d { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .cred .code {
-      flex: none; font-size: 12px; color: var(--accent); letter-spacing: .06em;
-      font-variant-numeric: tabular-nums; padding: 2px 6px; border-radius: 5px;
-    }
-    .cred .code:hover { background: #eaf3ff; }
-    .cred .fill { flex: none; font-size: 11px; color: var(--accent); opacity: 0; }
-    .cred:hover .fill { opacity: 1; }
+    .searchwrap { padding: 0 12px 8px; }
+    #q { width: 100%; border: 0; border-radius: 8px; padding: 7px 10px; background: var(--field);
+         color: var(--ink); font: inherit; outline: none; }
+    #q:focus { box-shadow: 0 0 0 2px var(--accent); }
+    #sync { padding: 0 14px 6px; font-size: 11px; color: var(--muted); }
+    #sync.bad { color: var(--bad); }
+    #status { padding: 0 14px 8px; color: var(--muted); font-size: 11px; font-weight: 600;
+              text-transform: uppercase; letter-spacing: .03em; border-bottom: 1px solid var(--line); }
+    #status .err { color: var(--bad); text-transform: none; }
+    #list { padding: 6px; max-height: 340px; overflow-y: auto; }
+    #list:empty::after { content: "No saved logins for this site"; display: block; padding: 22px 10px;
+                         text-align: center; color: var(--muted); font-size: 12px; }
+    .cred { display: flex; align-items: center; gap: 10px; padding: 8px 8px; border-radius: 9px; cursor: pointer; }
+    .cred:hover, .cred.sel { background: var(--accent); color: #fff; }
+    .cred:hover .d, .cred.sel .d { color: rgba(255,255,255,.8); }
+    .avatar { width: 30px; height: 30px; flex: none; border-radius: 8px; background: var(--hover);
+              display: grid; place-items: center; font-weight: 600; color: var(--muted); text-transform: uppercase; }
+    .cred:hover .avatar { background: rgba(255,255,255,.22); color: #fff; }
+    .meta { min-width: 0; flex: 1; }
+    .u { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .d { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .icons { display: none; gap: 2px; }
+    .cred:hover .icons { display: flex; }
+    .icons button { border: 0; background: rgba(255,255,255,.2); color: #fff; font: 11px inherit;
+                    border-radius: 6px; padding: 3px 6px; cursor: pointer; }
+    .icons button:hover { background: rgba(255,255,255,.35); }
+    .ring { width: 24px; height: 24px; flex: none; }
+    .codebox { display: flex; align-items: center; gap: 8px; }
+    .ring svg { transform: rotate(-90deg); }
+    .ring circle { fill: none; stroke-width: 3; }
+    .ring .bg { stroke: var(--line); } .ring .fg { stroke: var(--accent); transition: stroke-dashoffset 1s linear; }
+    .cred:hover .ring .fg { stroke: #fff; } .cred:hover .ring .bg { stroke: rgba(255,255,255,.3); }
+    .code { font-variant-numeric: tabular-nums; letter-spacing: .08em; font-size: 12px; color: var(--accent); }
+    .cred:hover .code { color: #fff; }
+    footer { display: flex; justify-content: space-between; padding: 8px 14px; border-top: 1px solid var(--line); }
+    footer button { border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; padding: 2px 0; }
   </style>
 </head>
 <body>
   <header>
-    <h1>iCloud Passwords</h1>
+    <svg viewBox="0 0 16 16" fill="currentColor"><path d="M10.5 1a4.5 4.5 0 0 0-4.2 6.1L1 12.4V15h3v-1.5h1.5V12H7l1.1-1.1A4.5 4.5 0 1 0 10.5 1Zm1.2 3.2a1.2 1.2 0 1 1 0 2.4 1.2 1.2 0 0 1 0-2.4Z"/></svg>
+    <h1>Passwords</h1>
     <span class="count" id="subcount"></span>
   </header>
+  <div class="searchwrap"><input id="q" type="search" placeholder="Search all passwords" autocomplete="off"></div>
+  <div id="sync"></div>
   <div id="status">Connecting...</div>
   <div id="list"></div>
+  <footer><button id="openapp">Open Passwords…</button><button id="resync" title="Run icp sync in a terminal">Sync status</button></footer>
   <script src="popup.js"></script>
 </body>
 </html>

@@ -25,6 +25,11 @@ class SessionError(AppleError):
     """The stored session exists but cannot be read with the current master key."""
 
 
+class KeyringLocked(SessionError):
+    """The keyring is locked and the unlock prompt was dismissed. Deliberately NOT a reason to fall
+    back to a key file: that would mint a new key and make every stored file undecryptable."""
+
+
 def _decode_key(stored: bytes | str | None) -> bytes | None:
     if stored is None:
         return None
@@ -46,9 +51,8 @@ def _key_from_secret_service() -> bytes | None:
     try:
         conn = secretstorage.dbus_init()
         coll = secretstorage.get_default_collection(conn)
-        if coll.is_locked() and coll.unlock():
-            logger.warning("keyring unlock dismissed; using key file fallback")
-            return None
+        if coll.is_locked() and coll.unlock():  # secretstorage: True means the prompt was dismissed
+            raise KeyringLocked("the keyring is locked - unlock it (login keyring) and try again")
         unusable = 0
         for item in coll.search_items(_ATTRS):
             key = _decode_key(item.get_secret())
@@ -60,6 +64,8 @@ def _key_from_secret_service() -> bytes | None:
         key = nacl.utils.random(_KEY_SIZE)
         coll.create_item(_LABEL, _ATTRS, base64.b64encode(key), replace=True)
         return key
+    except KeyringLocked:
+        raise
     except Exception as e:  # dbus not running, no keyring, etc.
         logger.warning("Secret Service unavailable (%s); using key file fallback", e)
         return None
