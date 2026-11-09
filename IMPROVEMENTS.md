@@ -95,13 +95,13 @@ before building on them.
 - **TPM-wrapped vault key**: this machine has a TPM2, but `systemd-creds encrypt --with-key=tpm2`
   fails for your user (`/dev/tpmrm0` is group `tss`, you are not in it), so it can't be built or
   tested without a system change (sudo `usermod -aG tss`). It also ties the vault to this TPM.
-- **Apple sign-in**: sync still fails with `ec=-80045` (2 automatic attempts so far, now backed
-  off), so the vault, keyring mirror and app show the 28-day-old snapshot. Likely cause found:
-  upstream `origin/main` is 7 commits ahead and changes the client identity sent to Apple
-  (Mac -> Windows, commit a1342ca "Fix Windows client authentication ...") plus sync-safety/rate
-  limiting and shared-password-group reading. It does not apply as a single patch; the fix is
-  merging `origin/main` into your branch (needs your uncommitted work committed first). NOT done:
-  it changes how this device presents itself to Apple, so it is your call.
+- **Apple sign-in**: merged upstream `origin/main` into `fix-gsa-client-identity` (work committed
+  first; the only conflict was `GSA_CLIENT_INFO`, resolved to upstream's Windows identity). 247
+  tests pass. One non-interactive `icp sync` after the merge no longer gets `ec=-80045` but Apple
+  returned a non-plist reply (HTTP error body), so sync still fails. Error text now reports the
+  HTTP status instead of a traceback. NOT retried (5-minute back-off, avoid hammering Apple); the
+  next step is `icp sync` once more, and if it persists `icp login` (likely needs a fresh sign-in
+  and 2FA, which only you can do).
 - **Search provider in Activities**: answers correctly over D-Bus, the `.desktop` file validates,
   but I can't see your Shell. Log out/in and enable Settings > Search > Passwords.
 - **Extension in your actual Helium profile**: verified in a throwaway profile with the same

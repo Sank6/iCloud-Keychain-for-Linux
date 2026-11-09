@@ -70,8 +70,14 @@ class GSAClient:
             verify=False, timeout=10,
         )
 
-        payload = plist.loads(resp.content)
-        response = payload["Response"]
+        try:
+            payload = plist.loads(resp.content)
+            response = payload["Response"]
+        except Exception:
+            raise GSAError(
+                f"GSA {operation} failed: HTTP {resp.status_code}: "
+                f"non-plist reply ({len(resp.content)} bytes)"
+            ) from None
 
         if not resp.ok:
             raise GSAError(
