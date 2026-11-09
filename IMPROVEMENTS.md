@@ -516,3 +516,14 @@ from the image's README, unverified) before re-creating it on 127.0.0.1.
 4. Packaging: install `icp-agent`/`icp-shim` + units from the `.deb`, Flatpak/AUR; drop `setup`'s
    per-user copies.
 5. `Adw.AlertDialog`, a Rust GTK app (needs `libadwaita-1-dev`), automated browser tests.
+
+
+## Windows app analysis (summary)
+
+Full write-up: `docs/WINDOWS_ICLOUD_ANALYSIS.md` (static, read-only, nothing executed).
+Key findings: the Windows iCloud app ships Apple's ported keychain stack (`secd`, CKKS, AOSKit,
+local anisette via `CoreADI64.dll`); the official extension's host is
+`iCloudPasswordsExtensionHelper.exe` (`com.apple.passwordmanager`, allowed origins include
+`pejdijmoenmkgeppbflobdenhhabjlaj`); the real client info string is
+`<PC> <...> <com.apple.AuthKitWin/x.y (bundle/ver)>`, unlike ours. Next experiment (once,
+after back-off): the AuthKitWin-shaped client info. Not done: disassembly of PIN attempt limits.
