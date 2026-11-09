@@ -29,7 +29,7 @@ You will also need this repo. Clone it / download it as you wish.
 From the project folder:
 
 ```
-python3 -m venv .venv && .venv/bin/pip install -e .
+python3 -m venv --system-site-packages .venv && .venv/bin/pip install -e .
 source .venv/bin/activate
 ```
 
