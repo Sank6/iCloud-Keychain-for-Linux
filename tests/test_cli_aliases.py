@@ -98,7 +98,7 @@ def test_2fa_challenge_requests_push_then_prompts_then_succeeds(monkeypatch):
     fake.account_login_results = [{"stage": "trusted"}]
     monkeypatch.setattr(webauth, "WebAuthSession", lambda *a, **k: fake)
     monkeypatch.setattr(webauth, "hsa_challenge_required", lambda data: False)
-    monkeypatch.setattr(app, "_twofa_prompt", lambda kind: "123456")
+    monkeypatch.setattr(app, "_hme_twofa_prompt", lambda: "123456")
 
     s = {"username": "alice", "password": "secret", "webauth": {}}
     sess, data = app._ensure_web_session(s, interactive=True)

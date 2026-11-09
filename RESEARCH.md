@@ -29,10 +29,13 @@ SRP implementation is adapted from
 
 - `com.apple.gs.idms.pet` is exchanged at `loginDelegates` using `Basic apple-id:PET`;
   escrow gets a fresh PET. This short-lived token is not fed back through SRP or used for CloudKit.
-- Since `6ce0325`, GSA, iCloud setup, escrow and CloudKit use the Windows client-info prefix
-  `<PC> <Windows;6.2(0,0);9200>`, with service-specific suffixes (GSA uses AuthKit/akd).
-  This supersedes the earlier macOS GSA fixes; CloudKit protobuf device fields and the
-  Octagon peer still use Mac defaults. The akd/iCloudHelper User-Agent strings remain Darwin-based.
+- The anisette server URL is required. `GET <URL>` supplies machine-validation headers and
+  `GET <URL>/v3/client_info` supplies the GrandSlam client identity. GSA does not retry HTTP 5xx
+  responses.
+- iCloud setup, escrow and CloudKit use service-specific client-info suffixes with the platform
+  reported by the anisette server. Apple binds the PET and derived tokens to that platform; mixing a PET
+  minted under one platform with another can be reported as an incorrect Apple ID or password.
+  CloudKit protobuf device fields and the Octagon peer retain their separate Mac model defaults.
 - GSA `Status.hsc == 409` without `au` means a code was pushed: validate without another trigger.
   `trustedDeviceSecondaryAuth` triggers a device code; `secondaryAuth` triggers SMS. Validation
   rejects plist `ec` errors even on HTTP 200, then re-authenticates after success for the PET.

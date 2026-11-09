@@ -11,18 +11,14 @@ reverse engineering attempt and **is not affiliated with Apple in any way**.
 
 ## What you'll need
 
-An **anisette server** running on your machine. Apple's sign-in needs a small piece of data that
-only Apple's own software can produce; the anisette server provides it locally. Start one with
-Docker (or Podman) - it keeps running in the background:
+A configured Anisette server (recommend [Anisette-on-Wine](https://github.com/Sank6/Anisette-on-Wine) to run locally on Linux or [omnisette-server](https://github.com/SideStore/omnisette-server), or any trusted third party anisette server):
 
 ```
-docker run -d --restart=always -p 6969:6969 dadoum/anisette-v3-server:latest
+export ICP_ANISETTE_URL="https://your-anisette-server.example"
 ```
 
-You only have to do this once. (If you run it somewhere other than the default
-`http://localhost:6969`, set `ICP_ANISETTE_URL` to its address.)
-
-You will also need this repo. Clone it / download it as you wish.
+The configured URL must return anisette headers as JSON to a `GET` request. Its
+`/v3/client_info` endpoint must return `client_info` and `user_agent`.
 
 ## Install
 
@@ -151,5 +147,4 @@ The keychain decryption, Octagon trust join, and CloudKit transport follow
 [OpenBubbles/rustpush](https://github.com/OpenBubbles/rustpush), cross-checked against
 [Apple's open-source Security code](https://github.com/apple-oss-distributions/Security). Hide My
 Email is ported from [dedoussis's browser extension](https://github.com/dedoussis/icloud-hide-my-email-browser-extension).
-Machine data is provided by the SideStore ecosystem's `anisette-v3-server`. See `RESEARCH.md` for
-how it all works.
+Machine data is provided by the configured anisette server. See `RESEARCH.md` for protocol details.

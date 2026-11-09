@@ -1,11 +1,12 @@
-"""Anisette client - fetches the "machine validation data" (X-Apple-I-MD / X-Apple-I-MD-M) that
-GrandSlam auth requires from an external anisette server run locally."""
+"""Anisette client."""
+
+from __future__ import annotations
 
 import os
+from urllib.parse import urlsplit
 
 import requests
 
-from ..const import DEFAULT_ANISETTE_URL
 from ..errors import AppleError
 
 
@@ -14,7 +15,6 @@ class AnisetteError(AppleError):
 
 
 class Anisette:
-    # Header keys an anisette server may return; we forward exactly these.
     _KEYS = (
         "X-Apple-I-MD",
         "X-Apple-I-MD-M",
@@ -27,25 +27,71 @@ class Anisette:
         "X-Apple-Locale",
     )
 
-    def __init__(self, url: str | None = None):
-        self.url = (url or os.environ.get("ICP_ANISETTE_URL") or DEFAULT_ANISETTE_URL).rstrip("/")
+    def __init__(self, url: str | None = None, *, timeout: int = 20):
+        configured = (url or os.environ.get("ICP_ANISETTE_URL") or "").strip().rstrip("/")
+        if not configured:
+            raise AnisetteError(
+                "no anisette server URL configured; pass --anisette URL or set "
+                "ICP_ANISETTE_URL"
+            )
+        parts = urlsplit(configured)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise AnisetteError(f"invalid anisette server URL: {configured}")
+        self.url = configured
+        self.timeout = timeout
+        self._client_info: dict[str, str] | None = None
+
+    @property
+    def client_info(self) -> str:
+        return self._identity()["client_info"]
+
+    @property
+    def user_agent(self) -> str:
+        return self._identity()["user_agent"]
+
+    @property
+    def platform(self) -> str:
+        platform, marker, _ = self.client_info.partition(" <com.apple.")
+        if not marker:
+            raise AnisetteError("anisette client info has no service identity")
+        return platform
+
+    def _identity(self) -> dict[str, str]:
+        if self._client_info is not None:
+            return self._client_info
+        url = f"{self.url}/v3/client_info"
+        try:
+            response = requests.get(url, timeout=self.timeout)
+            response.raise_for_status()
+            data = response.json()
+        except (requests.RequestException, ValueError) as e:
+            raise AnisetteError(f"could not fetch anisette client info from {url}: {e}") from e
+        if not isinstance(data, dict) or any(
+            not isinstance(data.get(key), str) or not data[key]
+            for key in ("client_info", "user_agent")
+        ):
+            raise AnisetteError(f"anisette server at {url} returned invalid client info")
+        self._client_info = {
+            "client_info": data["client_info"],
+            "user_agent": data["user_agent"],
+        }
+        return self._client_info
 
     def headers(self) -> dict:
         try:
-            resp = requests.get(self.url, timeout=5)
-            resp.raise_for_status()
-            data = resp.json()
-        except requests.RequestException as e:
-            raise AnisetteError(
-                f"Could not reach anisette server at {self.url}: {e}\n"
-                "Start one, e.g.: docker run -d -p 6969:6969 dadoum/anisette-server:latest\n"
-                "or set ICP_ANISETTE_URL to a running instance."
-            ) from e
+            response = requests.get(self.url, timeout=self.timeout)
+            response.raise_for_status()
+            data = response.json()
+        except (requests.RequestException, ValueError) as e:
+            raise AnisetteError(f"could not fetch anisette data from {self.url}: {e}") from e
 
-        out = {k: data[k] for k in self._KEYS if k in data}
-        if "X-Apple-I-MD" not in out or "X-Apple-I-MD-M" not in out:
+        if not isinstance(data, dict):
+            raise AnisetteError(f"anisette server at {self.url} returned invalid JSON")
+        headers = {key: data[key] for key in self._KEYS if key in data}
+        if any(not isinstance(value, str) or not value for value in headers.values()):
+            raise AnisetteError(f"anisette server at {self.url} returned invalid header values")
+        if "X-Apple-I-MD" not in headers or "X-Apple-I-MD-M" not in headers:
             raise AnisetteError(
-                f"Anisette server at {self.url} did not return machine data "
-                "(X-Apple-I-MD / X-Apple-I-MD-M). Is it a real anisette server?"
+                f"anisette server at {self.url} did not return X-Apple-I-MD / X-Apple-I-MD-M"
             )
-        return out
+        return headers

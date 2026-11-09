@@ -206,6 +206,8 @@ class SrpHandshakeTests(unittest.TestCase):
 
 
 class _Anis:
+    platform = "<TestDevice> <testOS;1.0>"
+
     def headers(self):
         # include a stale X-Mme-Client-Info to prove the header builder OVERWRITES it
         return {"X-Apple-I-MD": "x", "X-Mme-Client-Info": "STALE-ANISETTE-VALUE"}
@@ -253,7 +255,7 @@ class GatedTests(unittest.TestCase):
         self.assertEqual(h["X-Apple-I-MD"], "x")
         # X-Mme-Client-Info carries the AuthKit/sbd item and OVERWRITES the anisette value.
         self.assertEqual(h["X-Mme-Client-Info"],
-                         "<PC> <Windows;6.2(0,0);9200> "
+                         "<TestDevice> <testOS;1.0> "
                          "<com.apple.AuthKit/1 (com.apple.sbd/638.100.48)>")
 
     def test_user_action_label_exact(self):

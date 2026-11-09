@@ -20,6 +20,7 @@ import plistlib
 import uuid as _uuid
 
 from ..errors import AppleError
+from ..auth.headers import service_client_info
 
 # RFC 5054 2048-bit group (N, g=2). Standard public constant.
 _N_HEX = (
@@ -175,10 +176,8 @@ class EscrowRecovery:
     _COMMAND_VARIANT = {"srp_init": "SRP_INIT", "recover": "RECOVER", "get_records": "GETRECORDS",
                         "get_club_cert": "GETCLUB", "enroll": "ENROLL", "delete": "DELETE"}
 
-    # escrowproxy wants the sbd UA + a fixed X-Mme-Client-Info that overwrites anisette's.
     ESCROW_USER_AGENT = "com.apple.sbd/638.100.48 com.apple.iCloudHelper/282"
-    ESCROW_MME_CLIENT_INFO = ("<PC> <Windows;6.2(0,0);9200> "
-                              "<com.apple.AuthKit/1 (com.apple.sbd/638.100.48)>")
+    ESCROW_SERVICE_IDENTITY = "com.apple.AuthKit/1 (com.apple.sbd/638.100.48)"
 
     def __init__(self, host: str, email: str, pet: str, anisette, *, timeout: int = 30):
         self.host = host.rstrip("/")
@@ -197,7 +196,9 @@ class EscrowRecovery:
             "Content-Type": "application/x-apple-plst",
         }
         h.update(self.anisette.headers())
-        h["X-Mme-Client-Info"] = self.ESCROW_MME_CLIENT_INFO  # overrides anisette's
+        h["X-Mme-Client-Info"] = service_client_info(
+            self.anisette, self.ESCROW_SERVICE_IDENTITY,
+        )
         return h
 
     def _invoke(self, command: str, request: dict) -> dict:

@@ -6,7 +6,10 @@ import pytest
 
 from icp import const
 from icp.auth import gsa
-from icp.auth.gsa import GSAClient, GSAError
+from icp.auth.gsa import GSAClient, GSAError, GSAServiceError
+
+CLIENT_INFO = "<TestDevice> <testOS;1.0> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+USER_AGENT = "test-authkit/1.0"
 
 
 class _Device:
@@ -15,6 +18,9 @@ class _Device:
 
 
 class _Anisette:
+    client_info = CLIENT_INFO
+    user_agent = USER_AGENT
+
     def headers(self):
         return {
             "X-Apple-I-MD": "otp",
@@ -23,10 +29,11 @@ class _Anisette:
 
 
 class _Response:
-    def __init__(self, content, *, status=200):
+    def __init__(self, content, *, status=200, content_type="text/x-xml-plist"):
         self.content = content
         self.status_code = status
         self.ok = 200 <= status < 300
+        self.headers = {"Content-Type": content_type}
 
 
 @pytest.fixture
@@ -39,52 +46,148 @@ def _plist_response(response=None, *, status=200):
     return _Response(plistlib.dumps(body), status=status)
 
 
-def test_srp_request_uses_akd_identity(monkeypatch, client):
+def test_srp_request_uses_one_coherent_identity(monkeypatch, client):
     captured = {}
 
-    def fake_post(url, **kwargs):
-        captured.update({"url": url, **kwargs})
+    def fake_post(method, url, **kwargs):
+        captured.update({"method": method, "url": url, **kwargs})
         return _plist_response()
 
-    monkeypatch.setattr(gsa.requests, "post", fake_post)
+    monkeypatch.setattr(gsa.apple_tls, "request_once", fake_post)
 
-    client._request({"u": "nobody@example.invalid", "o": "init"})
+    client._request(
+        {"u": "nobody@example.invalid", "o": "init"},
+        anisette_headers=client.anisette.headers(),
+    )
 
     assert captured["url"] == const.GSA_ENDPOINT
+    assert captured["method"] == "POST"
+    assert captured["headers"]["Connection"] == "close"
+    request = plistlib.loads(captured["data"])["Request"]
     client_info = captured["headers"]["X-MMe-Client-Info"]
-    assert client_info == const.GSA_CLIENT_INFO
-    assert "com.apple.akd/1.0" in client_info
-    assert "com.apple.dt.Xcode" not in client_info
+    assert client_info == CLIENT_INFO
+    assert request["cpd"]["X-Mme-Client-Info"] == client_info
 
 
-def test_twofa_headers_use_akd_with_xcode_application_context(client):
+def test_twofa_headers_use_anisette_identity_with_xcode_application_context(client):
     headers = client._twofa_headers("123", "token")
 
-    assert headers["X-Mme-Client-Info"] == const.GSA_CLIENT_INFO
-    assert "com.apple.akd/1.0" in headers["X-Mme-Client-Info"]
-    assert "com.apple.dt.Xcode" not in headers["X-Mme-Client-Info"]
-    assert headers["User-Agent"] == "Xcode"
+    assert headers["X-Mme-Client-Info"] == CLIENT_INFO
+    assert headers["User-Agent"] == USER_AGENT
     assert headers["X-Apple-App-Info"] == "com.apple.gs.xcode.auth"
-    assert headers["X-Xcode-Version"] == "11.2 (11B41)"
+    assert headers["X-Xcode-Version"] == const.XCODE_VERSION
 
 
 def test_request_returns_response_dictionary(monkeypatch, client):
     expected = {"Status": {"ec": 0}, "sp": "s2k"}
-    monkeypatch.setattr(gsa.requests, "post", lambda *a, **k: _plist_response(expected))
+    monkeypatch.setattr(gsa.apple_tls, "request_once", lambda *a, **k: _plist_response(expected))
 
-    assert client._request({"o": "init"}) == expected
+    assert client._request({"o": "init"}, anisette_headers=client.anisette.headers()) == expected
 
 
 def test_non_success_plist_preserves_apple_status(monkeypatch, client):
     response = {"Status": {"ec": -20101, "em": "bad account"}}
     monkeypatch.setattr(
-        gsa.requests, "post", lambda *a, **k: _plist_response(response, status=401),
+        gsa.apple_tls, "request_once", lambda *a, **k: _plist_response(response, status=401),
     )
 
     with pytest.raises(GSAError) as exc_info:
-        client._request({"o": "init"})
+        client._request({"o": "init"}, anisette_headers=client.anisette.headers())
 
     message = str(exc_info.value)
     assert "HTTP 401" in message
     assert "ec=-20101" in message
     assert "bad account" in message
+
+
+def test_html_503_is_reported_without_retry(monkeypatch, client):
+    calls = []
+
+    def fail_once(*args, **kwargs):
+        calls.append((args, kwargs))
+        return _Response(b"<html>unavailable</html>", status=503, content_type="text/html")
+
+    monkeypatch.setattr(
+        gsa.apple_tls,
+        "request_once",
+        fail_once,
+    )
+
+    with pytest.raises(GSAServiceError, match="HTTP 503"):
+        client._request({"o": "init"}, anisette_headers=client.anisette.headers())
+    assert len(calls) == 1
+
+
+def test_plist_503_is_reported_as_service_failure(monkeypatch, client):
+    response = {"Status": {"ec": -1, "em": "unavailable"}}
+    monkeypatch.setattr(
+        gsa.apple_tls, "request_once", lambda *a, **k: _plist_response(response, status=503),
+    )
+
+    with pytest.raises(GSAServiceError, match="HTTP 503"):
+        client._request({"o": "init"}, anisette_headers=client.anisette.headers())
+
+
+class _ChangingAnisette(_Anisette):
+    def __init__(self):
+        self.calls = 0
+
+    def headers(self):
+        self.calls += 1
+        return {"X-Apple-I-MD": f"otp-{self.calls}",
+                "X-Apple-I-MD-M": "machine", "X-Apple-I-Client-Time": f"tick-{self.calls}"}
+
+
+def _authentication_transport(monkeypatch):
+    class User:
+        def start_authentication(self):
+            return "nobody@example.invalid", b"public-A"
+
+        def process_challenge(self, salt, public_b):
+            return b"client-proof"
+
+        def verify_session(self, proof):
+            assert proof == b"server-proof"
+
+        def authenticated(self):
+            return True
+
+        def get_session_key(self):
+            return b"synthetic-session-key"
+
+    monkeypatch.setattr(gsa.srp, "User", lambda *a, **k: User())
+    monkeypatch.setattr(gsa, "_decrypt_cbc", lambda *a: plistlib.dumps({"test": True}))
+    requests = []
+
+    def request(method, url, **kwargs):
+        payload = plistlib.loads(kwargs["data"])["Request"]
+        requests.append(payload)
+        if payload["o"] == "init":
+            return _plist_response({"Status": {"ec": 0}, "sp": "s2k", "s": b"salt",
+                                    "i": 1, "B": b"public-B", "c": "challenge"})
+        return _plist_response({"Status": {"ec": 0}, "M2": b"server-proof", "spd": b"encrypted"})
+
+    monkeypatch.setattr(gsa.apple_tls, "request_once", request)
+    return requests
+
+
+def test_srp_legs_share_machine_validation_and_client_time(monkeypatch):
+    requests = _authentication_transport(monkeypatch)
+    anisette = _ChangingAnisette()
+    client = GSAClient(_Device(), anisette)
+    client.authenticate("nobody@example.invalid", "synthetic-password", "test")
+    assert anisette.calls == 1
+    assert len(requests) == 2
+    assert requests[0]["cpd"] == requests[1]["cpd"]
+
+
+def test_separate_srp_transactions_fetch_fresh_machine_validation(monkeypatch):
+    requests = _authentication_transport(monkeypatch)
+    anisette = _ChangingAnisette()
+    client = GSAClient(_Device(), anisette)
+    for _ in range(2):
+        client.authenticate("nobody@example.invalid", "synthetic-password", "test")
+    assert anisette.calls == 2
+    assert requests[0]["cpd"] == requests[1]["cpd"]
+    assert requests[2]["cpd"] == requests[3]["cpd"]
+    assert requests[0]["cpd"] != requests[2]["cpd"]
