@@ -15,6 +15,9 @@ class _Device:
 
 
 class _Anisette:
+    client_info = None
+    user_agent = None
+
     def headers(self):
         return {
             "X-Apple-I-MD": "otp",
@@ -88,3 +91,12 @@ def test_non_success_plist_preserves_apple_status(monkeypatch, client):
     assert "HTTP 401" in message
     assert "ec=-20101" in message
     assert "bad account" in message
+
+
+def test_requests_use_the_anisette_sources_client_identity():
+    """Apple rejects anisette whose claimed client differs from its source (Oct 2026)."""
+    mac = "<MacBookPro17,1> <macOS;14.5;23F79> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+    anis = _Anisette()
+    anis.client_info = mac
+    client = GSAClient(_Device(), anis)
+    assert client._twofa_headers("1", "tok")["X-Mme-Client-Info"] == mac

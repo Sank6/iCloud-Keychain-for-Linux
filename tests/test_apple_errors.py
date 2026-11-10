@@ -27,6 +27,9 @@ class Dev:
 
 
 class Anis:
+    client_info = None
+    user_agent = None
+
     def headers(self): return {"X-Apple-I-MD": "a", "X-Apple-I-MD-M": "b"}
 
 

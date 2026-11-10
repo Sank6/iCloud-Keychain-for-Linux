@@ -31,6 +31,10 @@ class Anisette:
 
     def __init__(self, url: str | None = None):
         self.url = config.anisette_url(url)
+        # Identity (X-MMe-Client-Info) of the machine that generated the anisette data. Apple
+        # rejects data whose claimed client does not match its source, so GSA must send this one.
+        self.client_info: str | None = None
+        self.user_agent: str | None = None   # the matching GrandSlam User-Agent, if reported
         if not config.is_loopback(self.url):
             logger.warning("anisette server %s is not on this machine; it sees your device "
                            "identity. Prefer a loopback-only local server.", self.url)
@@ -47,6 +51,8 @@ class Anisette:
                 "anisette_url in ~/.config/icp/config.toml."
             ) from e
 
+        self.client_info = data.get("X-MMe-Client-Info") or data.get("X-Mme-Client-Info")
+        self._fetch_user_agent()
         out = {k: data[k] for k in self._KEYS if k in data}
         if "X-Apple-I-MD" not in out or "X-Apple-I-MD-M" not in out:
             raise AnisetteError(
@@ -54,3 +60,12 @@ class Anisette:
                 "(X-Apple-I-MD / X-Apple-I-MD-M). Is it a real anisette server?"
             )
         return out
+
+    def _fetch_user_agent(self) -> None:
+        """v3 servers publish the client_info + user_agent pair their data was generated for."""
+        try:
+            info = requests.get(self.url.rstrip("/") + "/v3/client_info", timeout=5).json()
+            self.user_agent = info.get("user_agent") or self.user_agent
+            self.client_info = info.get("client_info") or self.client_info
+        except (requests.RequestException, ValueError, AttributeError):
+            pass  # optional endpoint: keep what the plain reply gave us

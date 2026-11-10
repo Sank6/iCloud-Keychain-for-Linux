@@ -8,9 +8,12 @@ from the anisette server, not from here.
 # Sent as the GsService2 User-Agent.
 GSA_USER_AGENT = "akd/1.0 CFNetwork/978.0.7 Darwin/18.7.0"
 
-# AuthKit device description used by GrandSlam and its 2FA endpoints.
+# Fallback AuthKit device description, used only when the anisette server does not report the
+# identity its data was generated for (it normally does: /v3/client_info). It must describe the
+# SAME machine as the anisette data: Apple rejects a mismatch (e.g. a Windows string with
+# Mac-generated X-Apple-I-MD). The default v3 server generates Mac data, so this is Mac-like.
 GSA_CLIENT_INFO = (
-    "<PC> <Windows;6.2(0,0);9200> "
+    "<MacBookPro13,2> <macOS;13.1;22C65> "
     "<com.apple.AuthKit/1 (com.apple.akd/1.0)>"
 )
 

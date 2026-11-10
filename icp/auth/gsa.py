@@ -72,11 +72,12 @@ class GSAClient:
         body = {"Header": {"Version": "1.0.1"}, "Request": {"cpd": self._cpd()}}
         body["Request"].update(parameters)
         operation = parameters.get("o", "request")
+        # _cpd() above fetched anisette, so its reported client identity is known by now.
         headers = {
             "Content-Type": "text/x-xml-plist",
             "Accept": "*/*",
-            "User-Agent": const.GSA_USER_AGENT,
-            "X-MMe-Client-Info": const.GSA_CLIENT_INFO,
+            "User-Agent": self.anisette.user_agent or const.GSA_USER_AGENT,
+            "X-MMe-Client-Info": self.anisette.client_info or const.GSA_CLIENT_INFO,
         }
         resp = _net(operation, method="post", url=const.GSA_ENDPOINT, headers=headers,
                     data=plist.dumps(body), verify=False)
@@ -169,9 +170,9 @@ class GSAClient:
             "X-Apple-Identity-Token": identity_token,
             "X-Apple-App-Info": "com.apple.gs.xcode.auth",
             "X-Xcode-Version": "11.2 (11B41)",
-            "X-Mme-Client-Info": const.GSA_CLIENT_INFO,
         }
         h.update(identity_headers(self.device, self.anisette))
+        h["X-Mme-Client-Info"] = self.anisette.client_info or const.GSA_CLIENT_INFO
         return h
 
 
