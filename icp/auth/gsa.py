@@ -35,10 +35,13 @@ logger = logging.getLogger(__name__)
 # is safe. A 5xx is surfaced right away - it can mean the request was
 # processed after all, and retrying it would burn an attempt or push another
 # 2FA code.
+#
+# The window Apple throttles for is a couple of minutes, so the retries have to
+# outlast it: the delays are 10, 20, 40, 60, 60 seconds.
 RETRY_STATUS = (429,)
-RETRY_ATTEMPTS = 3
-RETRY_DELAY = 5.0            # seconds, grows with every attempt
-RETRY_DELAY_MAX = 60.0       # cap for Apple's Retry-After
+RETRY_ATTEMPTS = 5
+RETRY_DELAY = 10.0           # seconds, doubles with every attempt
+RETRY_DELAY_MAX = 60.0       # cap
 
 
 class GSAError(AppleError):
@@ -80,8 +83,11 @@ class GSAClient:
             )
             if resp.status_code not in RETRY_STATUS or attempt == RETRY_ATTEMPTS:
                 return resp
-            delay = retry_after_seconds(resp)
-            delay = min(delay, RETRY_DELAY_MAX) if delay else RETRY_DELAY * (attempt + 1)
+            delay = RETRY_DELAY * (2 ** attempt)
+            hint = retry_after_seconds(resp)
+            if hint:
+                delay = max(delay, hint)
+            delay = min(delay, RETRY_DELAY_MAX)
             logger.warning("GSA %s answered HTTP %s, retrying in %.0f s",
                            operation, resp.status_code, delay)
             time.sleep(delay)
