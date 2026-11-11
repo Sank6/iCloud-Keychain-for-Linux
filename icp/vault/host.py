@@ -23,6 +23,10 @@ import sys
 
 from .. import totp as totp_codes
 
+# A native-messaging request is a small JSON object. The length prefix is 32 bit, so
+# cap it: the peer is the browser, but a bad length should not ask for a huge read.
+MAX_MESSAGE_BYTES = 8 * 1024 * 1024
+
 
 @dataclasses.dataclass(frozen=True)
 class Credential:
@@ -356,6 +360,8 @@ def read_message(stream=None) -> dict | None:
     if len(raw_len) < 4:
         return None
     (length,) = struct.unpack("<I", raw_len)
+    if length > MAX_MESSAGE_BYTES:
+        return None
     data = stream.read(length)
     if len(data) < length:
         return None
