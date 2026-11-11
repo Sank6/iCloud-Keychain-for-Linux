@@ -67,7 +67,12 @@ async function main() {
   const ping = await send({ cmd: "ping" });
   if (!ping.ok) {
     subEl.textContent = "Not connected";
-    statusEl.innerHTML = `<span class="err">Host unavailable: ${ping.error || "?"}</span>`;
+    // Built with textContent, not innerHTML: the message can come from the native host.
+    statusEl.textContent = "";
+    const err = document.createElement("span");
+    err.className = "err";
+    err.textContent = `Host unavailable: ${ping.error || "?"}`;
+    statusEl.appendChild(err);
     return;
   }
   const domain = await activeDomain();
