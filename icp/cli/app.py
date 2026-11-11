@@ -34,6 +34,10 @@ def _utc(ms: int) -> datetime:
     return datetime.fromtimestamp(ms / 1000, timezone.utc)
 
 
+# Keep at least this much of a PET's life left before it is used.
+PET_MARGIN_MS = 60_000
+
+
 def _twofa_prompt(kind: str) -> str:
     where = "your trusted Apple devices" if kind == "trusted" else "SMS"
     ui.step(f"A 2FA code was sent to {where}.")
@@ -46,9 +50,35 @@ def _hme_twofa_prompt() -> str:
     return ui.ask("6-digit Hide My Email code: ")
 
 
-def _mint_pet(device, anisette, username: str, password: str) -> str:
-    """Mint a fresh GSA PET (password-equivalent token) for escrowproxy Basic auth. Silent on an
-    already-trusted device (no 2FA re-prompt). Kept fresh per phase because the PET is short-lived."""
+def _pet_is_usable(record: dict | None) -> bool:
+    """Is the PET of the sign-in still valid?
+
+    The PET is short lived (about five minutes) and Apple rate-limits repeated
+    SRP exchanges for an account, so the escrow step reuses the one the
+    sign-in minted instead of running another exchange.
+    """
+    if not record:
+        return False
+    pet = record.get("pet")
+    expiry = record.get("pet_expiry")
+    if not pet or not expiry:
+        return False
+    try:
+        expiry = int(expiry)
+    except (TypeError, ValueError):
+        return False
+    if expiry < 10 ** 12:          # seconds instead of milliseconds
+        expiry *= 1000
+    return expiry - int(time.time() * 1000) > PET_MARGIN_MS
+
+
+def _mint_pet(device, anisette, username: str, password: str,
+              *, record: dict | None = None) -> str:
+    """Return a GSA PET (password-equivalent token) for escrowproxy Basic auth. Silent on an
+    already-trusted device (no 2FA re-prompt). The PET of the sign-in is reused while it is
+    still valid, so the common case costs no extra SRP exchange at all."""
+    if _pet_is_usable(record):
+        return record["pet"]
     gsa = GSAClient(device, anisette)
     spd = auth.authenticate(gsa, username, password, _twofa_prompt)
     _, pet, _ = auth.extract_pet(spd)
@@ -579,7 +609,7 @@ def _join_and_sync(s: dict, device, anisette, username: str, password: str) -> i
         ui.step("Discovering escrow bottles...")
         # A PET here only lists device metadata via GETRECORDS (non-destructive, spends no
         # attempt) so the user can see WHICH device each bottle belongs to before choosing.
-        list_pet = _mint_pet(device, anisette, username, password)
+        list_pet = _mint_pet(device, anisette, username, password, record=s)
         bottles = client.list_recoverable_bottles(escrow_host, username, list_pet, warn=ui.warn)
     except (OctagonError, CloudKitError, GSAError, AnisetteError) as e:
         ui.err(str(e))
@@ -603,10 +633,11 @@ def _join_and_sync(s: dict, device, anisette, username: str, password: str) -> i
                "run `icp login` again to retry the keychain join.")
         return 0
 
-    # Mint a fresh PET right before the irreversible recovery so it can't expire during the
-    # selection/confirmation delay above.
+    # Use the PET of the sign-in while it is still valid, otherwise mint a fresh one right
+    # before the irreversible recovery so it can't expire during the selection/confirmation
+    # delay above.
     try:
-        pet = _mint_pet(device, anisette, username, password)
+        pet = _mint_pet(device, anisette, username, password, record=s)
     except (GSAError, AnisetteError) as e:
         ui.err(f"sign-in failed: {e}")
         return 1

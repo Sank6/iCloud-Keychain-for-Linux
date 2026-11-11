@@ -128,6 +128,40 @@ def test_plist_503_is_reported_as_service_failure(monkeypatch, client):
         client._request({"o": "init"}, anisette_headers=client.anisette.headers())
 
 
+def test_429_is_retried(monkeypatch, client):
+    """A rate-limited request was not processed, so sending it again is safe."""
+    calls = []
+
+    def rate_limited_then_ok(*args, **kwargs):
+        calls.append(kwargs.get("data"))
+        if len(calls) == 1:
+            return _Response(b"<html>too many requests</html>", status=429,
+                             content_type="text/html")
+        return _plist_response()
+
+    monkeypatch.setattr(gsa.apple_tls, "request_once", rate_limited_then_ok)
+    monkeypatch.setattr(gsa.time, "sleep", lambda seconds: None)
+
+    response = client._request({"o": "init"}, anisette_headers=client.anisette.headers())
+    assert response["Status"]["ec"] == 0
+    assert len(calls) == 2
+
+
+def test_429_gives_up_after_the_attempts(monkeypatch, client):
+    calls = []
+
+    def always_rate_limited(*args, **kwargs):
+        calls.append(kwargs.get("data"))
+        return _Response(b"<html>too many requests</html>", status=429, content_type="text/html")
+
+    monkeypatch.setattr(gsa.apple_tls, "request_once", always_rate_limited)
+    monkeypatch.setattr(gsa.time, "sleep", lambda seconds: None)
+
+    with pytest.raises(GSAError, match="HTTP 429"):
+        client._request({"o": "init"}, anisette_headers=client.anisette.headers())
+    assert len(calls) == gsa.RETRY_ATTEMPTS + 1
+
+
 class _ChangingAnisette(_Anisette):
     def __init__(self):
         self.calls = 0

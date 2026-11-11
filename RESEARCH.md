@@ -30,8 +30,8 @@ SRP implementation is adapted from
 - `com.apple.gs.idms.pet` is exchanged at `loginDelegates` using `Basic apple-id:PET`;
   escrow gets a fresh PET. This short-lived token is not fed back through SRP or used for CloudKit.
 - The anisette server URL is required. `GET <URL>` supplies machine-validation headers and
-  `GET <URL>/v3/client_info` supplies the GrandSlam client identity. GSA does not retry HTTP 5xx
-  responses.
+  `GET <URL>/v3/client_info` supplies the GrandSlam client identity. A `429` is retried, a `5xx`
+  is surfaced right away.
 - iCloud setup, escrow and CloudKit use service-specific client-info suffixes with the platform
   reported by the anisette server. Apple binds the PET and derived tokens to that platform; mixing a PET
   minted under one platform with another can be reported as an incorrect Apple ID or password.
@@ -60,6 +60,13 @@ SRP implementation is adapted from
 - GSA `Status.hsc == 409` without `au` means a code was pushed: validate without another trigger.
   `trustedDeviceSecondaryAuth` triggers a device code; `secondaryAuth` triggers SMS. Validation
   rejects plist `ec` errors even on HTTP 200, then re-authenticates after success for the PET.
+- Apple answers `429` when the sign-in rate is too high. The request was not processed, so it is
+  retried (a `5xx` is not: it can mean the request was processed after all, and retrying it would
+  burn an attempt or push another code).
+- Every SRP exchange is a chance for Apple to rate-limit the account, and a rejected exchange comes
+  back as `-22406` ("Enter the correct password for this Apple Account."), which is the same
+  generic answer as `-20101`. The escrow step therefore reuses the PET of the sign-in while it is
+  still valid (about five minutes) instead of running another exchange.
 - Sync refreshes `cloudKitToken` using `mmeAuthToken`; renewal follows rejection, not a fixed TTL.
   HTTP 401 or `ErrorID=UNAUTHORIZED` allows saved-password recovery outside `sync --background`;
   background sync stops for login. HTTP 429/5xx back off. Noninteractive GSA requests no extra
