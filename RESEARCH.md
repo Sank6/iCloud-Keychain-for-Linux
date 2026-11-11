@@ -36,6 +36,27 @@ SRP implementation is adapted from
   reported by the anisette server. Apple binds the PET and derived tokens to that platform; mixing a PET
   minted under one platform with another can be reported as an incorrect Apple ID or password.
   CloudKit protobuf device fields and the Octagon peer retain their separate Mac model defaults.
+- The platform of the anisette server has to be the platform of the ADI library that produced the
+  one-time password. Since October 2026, GSA compares the two and answers `-80045` ("This action
+  cannot be completed at this time.") when they differ, which surfaces as
+  `sign-in failed: sign-in: init failed: ec=-80045` during SRP phase 1. The comparison is made on
+  the one-time password, not on the identity that is sent: swapping the one-time password between
+  two servers swaps the verdict. Measured against live Apple with a made-up account:
+
+  | ADI library | advertised identity | result |
+  | --- | --- | --- |
+  | macOS | macOS | accepted |
+  | Windows | Windows + `com.apple.iTunes` / `com.apple.icloud` | accepted |
+  | macOS | Windows | `-80045` |
+  | Windows | macOS | `-22410` |
+  | Android | anything | `-80045` |
+
+  A server that builds the one-time password with the ADI libraries of the Apple Music application
+  for Android therefore cannot sign in with an Apple ID at all, whatever it advertises. Apple's
+  front end refuses an Android identity with `503` on `gsa.apple.com` and routes it to
+  `gsd.apple.com` instead (the URL bag `GET /grandslam/GsService2/lookup` says which service to
+  use), and it refuses a Windows identity that names `com.apple.AuthKit` with `403`. Only the
+  macOS and the Windows ADI libraries produce an identity that GrandSlam accepts.
 - GSA `Status.hsc == 409` without `au` means a code was pushed: validate without another trigger.
   `trustedDeviceSecondaryAuth` triggers a device code; `secondaryAuth` triggers SMS. Validation
   rejects plist `ec` errors even on HTTP 200, then re-authenticates after success for the PET.

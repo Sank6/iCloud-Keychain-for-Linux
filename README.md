@@ -20,6 +20,30 @@ export ICP_ANISETTE_URL="https://your-anisette-server.example"
 The configured URL must return anisette headers as JSON to a `GET` request. Its
 `/v3/client_info` endpoint must return `client_info` and `user_agent`.
 
+### The anisette server has to be a desktop one
+
+Sign-in with an Apple ID goes through Apple's GrandSlam service, which since
+October 2026 compares the platform the anisette server advertises in
+`X-Mme-Client-Info` with the platform of the ADI library that produced the
+one-time password, and refuses the request with `-80045` ("This action cannot be
+completed at this time.") when the two disagree.
+
+Anisette servers that build the one-time password with the ADI libraries of the
+Apple Music application for Android (this includes
+[anisette-v3-server](https://github.com/Dadoum/anisette-v3-server)) therefore
+cannot sign in with an Apple ID: their one-time password says *Android* while
+they advertise a Mac.
+
+Use a server that runs the macOS or the Windows ADI library instead, for
+example [anisette-server-rs](https://github.com/fdkevin0/anisette-server-rs),
+which runs both under an emulator:
+
+```bash
+docker run -d --name anisette -p 6969:6969 \
+  --mount type=volume,src=anisette-data,dst=/data \
+  ghcr.io/fdkevin0/anisette-server-rs:latest --backend macos
+```
+
 ## Install
 
 From the project folder:
