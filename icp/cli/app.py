@@ -86,13 +86,19 @@ def _mint_pet(device, anisette, username: str, password: str,
 
 
 def _describe_bottle(b: dict) -> str:
-    """Device name + serial for an escrow bottle.
-    Prefers the descriptive marketing name over the bare class."""
+    """Device name + model + serial + backup date for an escrow bottle.
+    The bottles are the keychain backups of every device the account ever used, so
+    the date and the model are what tell them apart."""
     meta = b.get("meta") or {}
     cm = meta.get("ClientMetadata") or {}
-    name = (cm.get("device_model") or cm.get("model") or cm.get("ProductType")
-            or cm.get("device_name") or cm.get("deviceName"))
-    return f"{name} ({meta.get('serial')})"
+    name = (cm.get("device_name") or cm.get("deviceName") or cm.get("device_model_class")
+            or cm.get("device_model") or cm.get("model") or cm.get("ProductType"))
+    model = cm.get("device_model_version") or cm.get("device_model") or ""
+    when = (meta.get("com.apple.securebackup.timestamp")
+            or cm.get("SecureBackupMetadataTimestamp") or "")
+    stamp = f", backed up {when}" if when else ""
+    parts = [p for p in (model, meta.get("serial")) if p]
+    return f"{name} ({', '.join(parts)}{stamp})"
 
 
 def _select_bottle(bottles: list[dict]) -> dict | None:
