@@ -54,6 +54,7 @@ def test_srp_request_uses_akd_identity(monkeypatch, client):
     client._request({"u": "nobody@example.invalid", "o": "init"})
 
     assert captured["url"] == const.GSA_ENDPOINT
+    assert captured["headers"]["Content-Type"] == "text/xml"
     client_info = captured["headers"]["X-MMe-Client-Info"]
     assert client_info == const.GSA_CLIENT_INFO
     assert "com.apple.akd/1.0" in client_info
@@ -100,3 +101,9 @@ def test_requests_use_the_anisette_sources_client_identity():
     anis.client_info = mac
     client = GSAClient(_Device(), anis)
     assert client._twofa_headers("1", "tok")["X-Mme-Client-Info"] == mac
+
+
+def test_grandslam_requests_use_the_content_type_apples_firewall_accepts():
+    client = GSAClient(_Device(), _Anisette())
+    assert client._twofa_headers("1", "tok")["Content-Type"] == "text/xml"
+    assert const.GSA_CONTENT_TYPE == "text/xml"

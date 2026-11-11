@@ -25,6 +25,11 @@ ANISETTE_IMAGE = "docker.io/dadoum/anisette-v3-server:latest"
 
 GSA_ENDPOINT = "https://gsa.apple.com/grandslam/GsService2"
 
+# Since ~2026-10-29 Apple's edge firewall answers an HTML 403 for the plist Content-Types
+# sideloaders used (text/x-xml-plist, application/x-xml-plist). text/xml passes on every
+# GrandSlam host and Apple parses the body identically.
+GSA_CONTENT_TYPE = "text/xml"
+
 # Browser-extension id. Fixed because extension/manifest.json carries the matching public `key`
 # (the private key is extension.pem, which must never be committed).
 EXTENSION_ID = "oienjgojkmebeibfajgflpaajlaaolkg"

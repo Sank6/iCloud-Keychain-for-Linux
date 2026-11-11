@@ -74,7 +74,7 @@ class GSAClient:
         operation = parameters.get("o", "request")
         # _cpd() above fetched anisette, so its reported client identity is known by now.
         headers = {
-            "Content-Type": "text/x-xml-plist",
+            "Content-Type": const.GSA_CONTENT_TYPE,
             "Accept": "*/*",
             "User-Agent": self.anisette.user_agent or const.GSA_USER_AGENT,
             "X-MMe-Client-Info": self.anisette.client_info or const.GSA_CLIENT_INFO,
@@ -163,7 +163,7 @@ class GSAClient:
     def _twofa_headers(self, dsid: str, idms_token: str) -> dict:
         identity_token = base64.b64encode(f"{dsid}:{idms_token}".encode()).decode()
         h = {
-            "Content-Type": "text/x-xml-plist",
+            "Content-Type": const.GSA_CONTENT_TYPE,
             "User-Agent": "Xcode",
             "Accept": "text/x-xml-plist",
             "Accept-Language": "en-us",
