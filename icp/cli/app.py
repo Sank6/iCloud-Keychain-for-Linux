@@ -97,6 +97,11 @@ def _describe_bottle(b: dict) -> str:
     when = (meta.get("com.apple.securebackup.timestamp")
             or cm.get("SecureBackupMetadataTimestamp") or "")
     stamp = f", backed up {when}" if when else ""
+    length = cm.get("SecureBackupNumericPassphraseLength")
+    if length == 6:
+        stamp += ", 6-digit passcode"
+    elif length == 0 and cm.get("SecureBackupUsesComplexPassphrase"):
+        stamp += ", passphrase (not a PIN)"
     parts = [p for p in (model, meta.get("serial")) if p]
     return f"{name} ({', '.join(parts)}{stamp})"
 
