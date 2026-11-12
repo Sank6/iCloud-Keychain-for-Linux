@@ -25,6 +25,14 @@ ANDROID_CLIENT_INFO = (
     "<com.apple.AuthKit/1 (com.apple.akd/1.0)>"
 )
 
+# Claimed to Apple when the anisette comes from a real-Mac v3 server. Those servers report a
+# 2016 MacBook Pro on macOS 10.12.6; Apple refuses that for accounts with Advanced Data Protection
+# (needs macOS >= 13.1): "Can't Use Your Apple ID on This Device", no trusted-device 2FA code.
+MAC_CLIENT_INFO = (
+    "<Mac15,7> <macOS;14.5;23F79> "
+    "<com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+)
+
 # Default anisette server: loopback only. Override with --anisette, ICP_ANISETTE_URL or
 # `anisette_url` in ~/.config/icp/config.toml (see icp/config.py).
 ANISETTE_PORT = 6969

@@ -6,6 +6,7 @@ import plistlib
 
 import pytest
 
+from icp import const
 from icp.auth import anisette as anisette_mod
 from icp.auth import anisette_v3 as v3
 from icp.auth.anisette import AnisetteError
@@ -103,17 +104,20 @@ def test_provisioning_runs_the_whole_handshake_from_this_machine(env, monkeypatc
     assert plistlib.loads(calls["apple"][2][2]["data"])["Request"] == {"cpim": "CPIM"}
 
 
+def _fake_provision(self, connect=None):
+    self.state.adi_pb, self.state.claim = b"ADI", self.client_info
+    self.state.save()
+
+
 def test_headers_provision_once_and_persist_the_identity(env, monkeypatch):
     calls, _ = env
-    monkeypatch.setattr(v3.AnisetteV3, "provision",
-                        lambda self, connect=None: (setattr(self.state, "adi_pb", b"ADI"),
-                                                    self.state.save()))
+    monkeypatch.setattr(v3.AnisetteV3, "provision", _fake_provision)
     a = v3.AnisetteV3(SERVER)
     h = a.headers()
     assert h["X-Apple-I-MD"] == "otp" and h["X-Apple-I-MD-M"] == "machine"
     assert h["X-Apple-I-MD-RINFO"] == "33883392"
     assert h["X-Mme-Device-Id"] == a.state.device_id
-    assert a.client_info == CLIENT and a.user_agent == UA
+    assert a.client_info == const.MAC_CLIENT_INFO and a.user_agent == UA
     # a second run reuses the saved identity and adi_pb: no new provisioning, same device
     b = v3.AnisetteV3(SERVER)
     assert b.state.identifier == a.state.identifier and b.state.adi_pb == b"ADI"
@@ -140,7 +144,7 @@ def test_unprovisioned_error_provisions_again_once(env, monkeypatch):
                                    "X-Apple-I-MD-M": "m", "X-Apple-I-MD-RINFO": 1}
     monkeypatch.setattr(v3.AnisetteV3, "provision", prov)
     a = v3.AnisetteV3(SERVER)
-    a.state.adi_pb = b"STALE"
+    a.state.adi_pb, a.state.claim = b"STALE", const.MAC_CLIENT_INFO
     a.headers()
     assert seen == [1]
 
@@ -149,7 +153,7 @@ def test_server_failure_is_reported(env, monkeypatch):
     _, state = env
     state["headers_result"] = {"result": "GetHeadersError", "message": "boom"}
     a = v3.AnisetteV3(SERVER)
-    a.state.adi_pb = b"ADI"
+    a.state.adi_pb, a.state.claim = b"ADI", const.MAC_CLIENT_INFO
     with pytest.raises(AnisetteError, match="boom"):
         a.headers()
 
@@ -194,3 +198,24 @@ def test_provisioning_over_a_real_websocket(env):
         srv.shutdown()
     assert a.state.adi_pb == b"REAL"
     assert got[1] == {"spim": "SPIM"} and got[2] == {"ptm": "PTM", "tk": "TK"}
+
+
+def test_claims_a_recent_mac_not_the_servers_ancient_one(env, monkeypatch):
+    """Apple refuses macOS < 13.1 for Advanced Data Protection accounts (no device 2FA code)."""
+    monkeypatch.setattr(v3.AnisetteV3, "provision", _fake_provision)
+    a = v3.AnisetteV3(SERVER)
+    a.headers()
+    assert a.client_info == const.MAC_CLIENT_INFO != CLIENT
+
+
+def test_a_changed_claim_provisions_again(env, monkeypatch):
+    seen = []
+    monkeypatch.setattr(v3.AnisetteV3, "provision",
+                        lambda self, connect=None: (seen.append(1), _fake_provision(self)))
+    a = v3.AnisetteV3(SERVER)
+    a.headers()
+    v3.AnisetteV3(SERVER).headers()            # same claim: reuse
+    assert seen == [1]
+    monkeypatch.setenv("ICP_CLIENT_INFO", "<Mac14,2> <macOS;15.0;24A335> <x>")
+    v3.AnisetteV3(SERVER).headers()            # new claim: provision again
+    assert seen == [1, 1]

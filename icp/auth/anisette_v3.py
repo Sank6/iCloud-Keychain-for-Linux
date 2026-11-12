@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from .. import config, net, paths
+from .. import config, const, net, paths
 from ..errors import AppleError
 from .anisette import Anisette, AnisetteError
 
@@ -48,8 +48,10 @@ def _b64(b: bytes) -> str:
 class _State:
     """identifier (16 random bytes, ours alone) + the adi_pb the server's ADI produced for it."""
 
-    def __init__(self, identifier: bytes, adi_pb: bytes | None, server: str):
-        self.identifier, self.adi_pb, self.server = identifier, adi_pb, server
+    def __init__(self, identifier: bytes, adi_pb: bytes | None, server: str, claim: str = ""):
+        # `claim` is the client identity Apple was told at provisioning; a different claim means
+        # a new provisioning (Apple ties the registration to what the device said it was).
+        self.identifier, self.adi_pb, self.server, self.claim = identifier, adi_pb, server, claim
 
     @classmethod
     def load(cls, server: str) -> "_State":
@@ -59,7 +61,8 @@ class _State:
             adi = base64.b64decode(d["adi_pb"]) if d.get("adi_pb") else None
             if len(ident) == 16:
                 # adi_pb belongs to the server that generated it
-                return cls(ident, adi if d.get("server") == server else None, server)
+                return cls(ident, adi if d.get("server") == server else None, server,
+                           d.get("claim", ""))
         except (OSError, ValueError, KeyError):
             pass
         return cls(os.urandom(16), None, server)
@@ -71,7 +74,7 @@ class _State:
         with os.fdopen(fd, "w") as fh:
             json.dump({"identifier": _b64(self.identifier),
                        "adi_pb": _b64(self.adi_pb) if self.adi_pb else None,
-                       "server": self.server}, fh)
+                       "server": self.server, "claim": self.claim}, fh)
         os.replace(tmp, f)
 
     @property
@@ -147,6 +150,7 @@ class AnisetteV3(Anisette):
                     ws.send(json.dumps({"ptm": r["Response"]["ptm"], "tk": r["Response"]["tk"]}))
                 elif result == "ProvisioningSuccess":
                     self.state.adi_pb = base64.b64decode(msg["adi_pb"])
+                    self.state.claim = self.client_info
                     self.state.save()
                     return
                 else:
@@ -155,8 +159,10 @@ class AnisetteV3(Anisette):
 
     # ---- headers -----------------------------------------------------------------------------
     def headers(self) -> dict:
-        reported, self.user_agent = self._server_identity()
-        self.client_info = config.client_info() or reported
+        _, self.user_agent = self._server_identity()
+        self.client_info = config.client_info() or const.MAC_CLIENT_INFO
+        if self.state.claim != self.client_info:
+            self.state.adi_pb = None          # registered under another identity: redo it
         for attempt in (0, 1):
             if not self.state.adi_pb:
                 self.provision()
