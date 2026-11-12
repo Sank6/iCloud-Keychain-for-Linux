@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import logging
 import plistlib as plist
+import re
 
 import requests  # noqa: F401 - tests patch gsa.requests.*
 import srp._pysrp as srp
@@ -133,8 +134,11 @@ class GSAClient:
         return complete, spd
 
     def trigger_trusted_factor(self, dsid: str, idms_token: str) -> None:
-        _net("2FA trigger", method="get", url="https://gsa.apple.com/auth/verify/trusteddevice",
-             headers=self._twofa_headers(dsid, idms_token), verify=False)
+        resp = _net("2FA trigger", method="get",
+                    url="https://gsa.apple.com/auth/verify/trusteddevice",
+                    headers=self._twofa_headers(dsid, idms_token), verify=False)
+        logger.debug("2FA trigger reply: HTTP %s content-type=%s body=%s", resp.status_code,
+                     resp.headers.get("Content-Type"), _mask(resp.text))
 
     def submit_trusted_factor(self, code: str, dsid: str, idms_token: str) -> None:
         h = self._twofa_headers(dsid, idms_token)
@@ -174,6 +178,11 @@ class GSAClient:
         h.update(identity_headers(self.device, self.anisette))
         h["X-Mme-Client-Info"] = self.anisette.client_info or const.GSA_CLIENT_INFO
         return h
+
+
+def _mask(text: str, limit: int = 700) -> str:
+    """Body of an Apple reply for the debug log with every digit masked (phone numbers, codes)."""
+    return re.sub(r"\d", "#", " ".join((text or "").split()))[:limit]
 
 
 def _encrypt_password(password: str, salt: bytes, iterations: int, protocol: str) -> bytes:

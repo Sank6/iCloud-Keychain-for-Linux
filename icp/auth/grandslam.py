@@ -1,9 +1,12 @@
 """High-level authentication flow: SRP login + 2FA + PET extraction."""
 
+import logging
 from typing import Callable
 
 from .. import config
 from .gsa import GSAClient, GSAError
+
+logger = logging.getLogger(__name__)
 
 # Called with the factor kind ("trusted" | "sms"); must return the 6-digit code.
 TwoFactorCallback = Callable[[str], str]
@@ -37,6 +40,7 @@ def authenticate(gsa: GSAClient, username: str, password: str,
     r, spd = gsa.authenticate(username, password, "sign-in")
     status = r["Status"]
     au = status.get("au")
+    logger.debug("2FA decision: hsc=%s au=%s", status.get("hsc"), au)
     # A 409 without an auth mode means Apple has already sent a trusted-device code.
     code_sent = status.get("hsc") == 409 and not au
     if not code_sent and au not in ("trustedDeviceSecondaryAuth", "secondaryAuth"):
