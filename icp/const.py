@@ -5,6 +5,8 @@ kept stable and Mac-like. The volatile per-request machine data (X-Apple-I-MD*) 
 from the anisette server, not from here.
 """
 
+import re
+
 # Sent as the GsService2 User-Agent.
 GSA_USER_AGENT = "akd/1.0 CFNetwork/978.0.7 Darwin/18.7.0"
 
@@ -32,6 +34,15 @@ MAC_CLIENT_INFO = (
     "<Mac15,7> <macOS;14.5;23F79> "
     "<com.apple.AuthKit/1 (com.apple.akd/1.0)>"
 )
+
+def with_device(service_info: str, claim: str | None) -> str:
+    """`service_info` is "<device> <os> <service>"; keep its service part (what Apple expects for
+    that endpoint) but claim the device the anisette data really came from. Apple rejects a claim
+    that contradicts the anisette ("-80045", "Apple ID or password entered incorrectly")."""
+    dev = re.match(r"(<[^>]*> <[^>]*>) ", claim or "")
+    svc = re.match(r"<[^>]*> <[^>]*> (.*)", service_info)
+    return f"{dev.group(1)} {svc.group(1)}" if dev and svc else service_info
+
 
 # Default anisette server: loopback only. Override with --anisette, ICP_ANISETTE_URL or
 # `anisette_url` in ~/.config/icp/config.toml (see icp/config.py).

@@ -11,6 +11,7 @@ from .. import net
 from .anisette import Anisette
 from .device import Device
 from .headers import identity_headers
+from .. import const
 from ..errors import AppleError
 
 urllib3.disable_warnings()
@@ -64,10 +65,10 @@ def login_mobileme(username: str, pet: str, adsid: str, client_id: str,
     headers = {
         "X-Apple-ADSID": adsid,
         "User-Agent": ICLOUD_USER_AGENT,
-        "X-Mme-Client-Info": ICLOUD_CLIENT_INFO,
         "Accept": "*/*",
     }
     headers.update(identity_headers(device, anisette))
+    headers["X-Mme-Client-Info"] = const.with_device(ICLOUD_CLIENT_INFO, anisette.client_info)
     headers["Authorization"] = _basic(username, pet)  # apple-id:PET (NOT dsid:PET)
 
     resp = _post("loginDelegates", url, headers=headers, data=body, verify=False)
@@ -103,11 +104,11 @@ def fetch_account_settings(record: dict, device: Device, anisette: Anisette,
 
     headers = {
         "Authorization": _basic(str(dsid), token),
-        "X-Mme-Client-Info": ICLOUD_CLIENT_INFO,
         "User-Agent": ICLOUD_USER_AGENT,
         "Accept": "*/*",
     }
     headers.update(identity_headers(device, anisette))
+    headers["X-Mme-Client-Info"] = const.with_device(ICLOUD_CLIENT_INFO, anisette.client_info)
 
     resp = _post("account settings", url, headers=headers, data="", verify=False)
     logger.debug("get_account_settings -> HTTP %s (%d bytes)",

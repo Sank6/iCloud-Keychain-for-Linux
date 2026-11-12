@@ -19,7 +19,7 @@ import os
 import plistlib
 import uuid as _uuid
 
-from .. import net
+from .. import const, net
 from ..errors import AppleError
 
 # RFC 5054 2048-bit group (N, g=2). Standard public constant.
@@ -198,7 +198,8 @@ class EscrowRecovery:
             "Content-Type": "application/x-apple-plst",
         }
         h.update(self.anisette.headers())
-        h["X-Mme-Client-Info"] = self.ESCROW_MME_CLIENT_INFO  # overrides anisette's
+        h["X-Mme-Client-Info"] = const.with_device(          # overrides anisette's
+            self.ESCROW_MME_CLIENT_INFO, getattr(self.anisette, "client_info", None))
         return h
 
     def _invoke(self, command: str, request: dict) -> dict:

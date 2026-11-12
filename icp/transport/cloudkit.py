@@ -11,7 +11,7 @@ import hashlib
 import os
 import uuid as _uuid
 
-from .. import net
+from .. import const, net
 from ..proto import codec as _proto
 from ..proto.codec import Writer, decode_fields, first, first_str
 from ..proto.cuttlefish import encode_function_invoke_request
@@ -159,10 +159,13 @@ def ck_app_init(container: str, bundle: str, dsid: str, mme_token: str, anisette
                 *, timeout: int = 30) -> str:
     """ckAppInit handshake -> the per-container `cloudKitUserId` CloudKit wants in
     `x-cloudkit-userid` (it is NOT the dsid). Authed with Basic(dsid, mmeAuthToken)."""
-    headers = _container_headers(bundle=bundle, container=container)
+    anisette_headers = anisette.headers()      # first: it also learns the client identity
+    headers = _container_headers(
+        bundle=bundle, container=container,
+        mme_client_info=const.with_device(CK_MME_CLIENT_INFO, getattr(anisette, "client_info", None)))
     headers["Authorization"] = "Basic " + base64.b64encode(
         f"{dsid}:{mme_token}".encode()).decode()
-    headers.update(anisette.headers())
+    headers.update(anisette_headers)
     resp = _post("ckAppInit", CK_APP_INIT_URL, params={"container": container}, headers=headers,
                  data="", verify=VERIFY_TLS, timeout=(5, timeout))
     if resp.status_code == 401:
@@ -248,14 +251,16 @@ class CloudKitTransport:
                  database_scope: str = "Private") -> dict:
         """Shared container headers plus the two CKCode-invoke headers: x-cloudkit-userid
         (cloudKitUserId) and x-cloudkit-authtoken (cloudKitToken - never in the protobuf body)."""
+        anisette_headers = self.anisette.headers()   # first: it also learns the client identity
         h = _container_headers(
             bundle=bundle, container=self.container, database_scope=database_scope,
-            mme_client_info=self.mme_client_info or CK_MME_CLIENT_INFO)
+            mme_client_info=self.mme_client_info or const.with_device(
+                CK_MME_CLIENT_INFO, getattr(self.anisette, "client_info", None)))
         h["x-cloudkit-userid"] = self.user_id
         h["x-cloudkit-authtoken"] = self.ck_token
         if routing_hint:
             h["x-cloudkit-functionroutinghint"] = routing_hint
-        h.update(self.anisette.headers())
+        h.update(anisette_headers)
         return h
 
     def _perform(self, url: str, op_type: int, request_field: int, request_bytes: bytes,
