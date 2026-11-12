@@ -62,6 +62,17 @@ def agent_path() -> Path:
     return user if user.exists() or not (SYSTEM_LIB / "icp-agent").exists() else SYSTEM_LIB / "icp-agent"
 
 
+def _install_binary(built: Path, dest: Path) -> None:
+    """Replace `dest` with `built` even while the old one is running: copy beside it, then rename
+    (copying over a running executable fails with "Text file busy"; the running process keeps its
+    old inode and the next start picks up the new file)."""
+    import shutil
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".new")
+    shutil.copy2(built, tmp)
+    os.replace(tmp, dest)
+
+
 def build_agent() -> bool:
     """Compile the Rust agent (same protocol as icp/agent.py) and install it. Needs cargo."""
     import shutil
@@ -73,8 +84,7 @@ def build_agent() -> bool:
     built = src / "target" / "release" / "icp-agent"
     if r.returncode or not built.exists():
         return False
-    agent_path().parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(built, agent_path())
+    _install_binary(built, agent_path())
     return True
 
 
@@ -89,8 +99,7 @@ def build_shim() -> bool:
     built = src / "target" / "release" / "icp-shim"
     if r.returncode or not built.exists():
         return False
-    shim_path().parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(built, shim_path())
+    _install_binary(built, shim_path())
     return True
 
 

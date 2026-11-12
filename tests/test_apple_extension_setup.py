@@ -107,3 +107,23 @@ def test_autofill_panel_text():
     assert "ready" in heading and "Windows user agent" in body and "Helium" in body
     patched = {"hosts": [("Helium", True, "")], "mode": "patched"}
     assert "Load unpacked" in autofill_summary(patched)[1]
+
+
+def test_installing_a_binary_over_a_running_one_works(tmp_path):
+    """`icp setup` used to crash with "Text file busy" while the agent was running."""
+    import subprocess
+    import sys
+    dest = tmp_path / "icp-agent"
+    dest.write_bytes(b"#!/bin/sh\nexec sleep 30\n")
+    dest.chmod(0o755)
+    running = subprocess.Popen([str(dest)])
+    try:
+        new = tmp_path / "built"
+        new.write_bytes(b"#!/bin/sh\nexit 0\n")
+        new.chmod(0o755)
+        hosts._install_binary(new, dest)
+        assert dest.read_bytes() == b"#!/bin/sh\nexit 0\n"
+        assert not (tmp_path / "icp-agent.new").exists()
+    finally:
+        running.kill()
+        running.wait()
