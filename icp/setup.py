@@ -60,9 +60,13 @@ def apple_extension(mode: str | None) -> None:
             p = ah.windows_ua_entry(did, major)
             ui.out(f"  {label}: launcher with a Windows user agent -> {p}")
         if entries:
-            ui.out("  Quit the browser completely, reopen it from the app grid, and install Apple's\n"
-                   "  'iCloud Passwords' extension from the Chrome Web Store. A browser that is\n"
-                   "  already running ignores the flag. Every site sees a Windows user agent.")
+            ui.out("  Install Apple's 'iCloud Passwords' extension from the Chrome Web Store. Every\n"
+                   "  site in that browser will see a Windows user agent.")
+            running = ah.status()["running_without_ua"]
+            if running:
+                ui.warn("the browser is already running, so it ignores the new flag: quit it "
+                        "completely (browser menu -> Exit; it can keep running in the background "
+                        "after its windows close), then reopen it from the app grid")
     elif mode == "patched":
         for _, did in ah.desktop_ids_for_detected():
             if ah.restore_entry(did):

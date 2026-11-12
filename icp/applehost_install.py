@@ -148,9 +148,11 @@ def exec_binary(desktop_id: str) -> str | None:
 def running_without_windows_ua(binary: str, proc="/proc") -> bool:
     """True when `binary` is running (its main process, not a renderer) without our --user-agent.
     A browser that keeps running in the background reuses that process for every new window and
-    ignores a flag on the new command line, so the Windows UA silently never applies."""
+    ignores a flag on the new command line, so the Windows UA silently never applies.
+    Chromium rewrites its process title, so /proc/<pid>/cmdline may be ONE string rather than
+    separate arguments: look for the flags inside the whole line."""
     import os
-    main = []
+    mains = []
     for pid in os.listdir(proc):
         if not pid.isdigit():
             continue
@@ -158,12 +160,12 @@ def running_without_windows_ua(binary: str, proc="/proc") -> bool:
             with open(f"{proc}/{pid}/comm") as f:
                 comm = f.read().strip()
             with open(f"{proc}/{pid}/cmdline", "rb") as f:
-                argv = f.read().split(b"\0")
+                line = f.read().replace(b"\0", b" ")
         except OSError:
             continue
-        if comm == os.path.basename(binary)[:15] and not any(a.startswith(b"--type=") for a in argv):
-            main.append(argv)
-    return bool(main) and not any(any(a.startswith(b"--user-agent=") for a in argv) for argv in main)
+        if comm == os.path.basename(binary)[:15] and b" --type=" not in line:
+            mains.append(line)
+    return bool(mains) and not any(b" --user-agent=" in line for line in mains)
 
 
 def status() -> dict:

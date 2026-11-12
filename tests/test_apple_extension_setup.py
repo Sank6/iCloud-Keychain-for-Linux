@@ -162,3 +162,18 @@ def test_doctor_and_panel_tell_you_to_restart(home, monkeypatch):
     from icp.gui.model import autofill_summary
     heading, body = autofill_summary(ah.status())
     assert heading == "Restart your browser to finish" and "patched" in body
+
+
+def test_detection_copes_with_a_rewritten_process_title(tmp_path):
+    """Chromium sets its title, so cmdline is one space-joined string with no NUL separators."""
+    root = tmp_path / "proc"
+    def proc(pid, line):
+        d = root / str(pid)
+        d.mkdir(parents=True)
+        (d / "comm").write_text("helium\n")
+        (d / "cmdline").write_bytes(line.encode() + b"\0\0")
+    proc(1, "/opt/helium/helium --user-agent=Mozilla/5.0 (Windows NT 10.0; Win64) Safari/537.36")
+    proc(2, "/opt/helium/helium --type=renderer --crashpad-handler-pid=7")
+    assert ah.running_without_windows_ua("helium", proc=str(root)) is False
+    (root / "1" / "cmdline").write_bytes(b"/opt/helium/helium\0\0")
+    assert ah.running_without_windows_ua("helium", proc=str(root)) is True
