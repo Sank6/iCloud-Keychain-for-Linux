@@ -67,7 +67,8 @@ def test_unknown_browser_has_no_entry(home):
         ah.windows_ua_entry("nope.desktop")
 
 
-def test_status_reports_hosts_and_mode(home):
+def test_status_reports_hosts_and_mode(home, monkeypatch):
+    monkeypatch.setattr(ah, "running_without_windows_ua", lambda b, proc="/proc": False)
     ah.install()
     st = ah.status()
     assert st["hosts"] == [("Helium", True, "")] and st["mode"] is None
@@ -86,7 +87,8 @@ def test_status_flags_a_broken_host(home):
     assert sev == doctor.FAIL and "launcher" in msg and "icp setup" in hint
 
 
-def test_doctor_warns_until_a_mode_is_chosen(home):
+def test_doctor_warns_until_a_mode_is_chosen(home, monkeypatch):
+    monkeypatch.setattr(ah, "running_without_windows_ua", lambda b, proc="/proc": False)
     ah.install()
     sev, msg, hint = doctor.check_apple_extension()
     assert sev == doctor.WARN and "useragent" in hint
@@ -127,3 +129,36 @@ def test_installing_a_binary_over_a_running_one_works(tmp_path):
     finally:
         running.kill()
         running.wait()
+
+
+def _fake_proc(tmp_path, procs):
+    root = tmp_path / "proc"
+    for pid, (comm, argv) in procs.items():
+        d = root / str(pid)
+        d.mkdir(parents=True)
+        (d / "comm").write_text(comm + "\n")
+        (d / "cmdline").write_bytes(b"\0".join(a.encode() for a in argv) + b"\0")
+    return str(root)
+
+
+def test_a_running_browser_without_the_flag_is_detected(tmp_path):
+    ua = "--user-agent=Mozilla/5.0 (Windows NT 10.0)"
+    old = _fake_proc(tmp_path / "a", {1: ("helium", ["/opt/helium/helium"]),
+                                     2: ("helium", ["/opt/helium/helium", "--type=renderer"])})
+    new = _fake_proc(tmp_path / "b", {1: ("helium", ["/opt/helium/helium", ua]),
+                                     2: ("helium", ["/opt/helium/helium", "--type=renderer"])})
+    none = _fake_proc(tmp_path / "c", {1: ("bash", ["bash"])})
+    assert ah.running_without_windows_ua("helium", proc=old) is True
+    assert ah.running_without_windows_ua("helium", proc=new) is False
+    assert ah.running_without_windows_ua("helium", proc=none) is False      # not running: fine
+
+
+def test_doctor_and_panel_tell_you_to_restart(home, monkeypatch):
+    ah.install()
+    ah.windows_ua_entry("helium.desktop")
+    monkeypatch.setattr(ah, "running_without_windows_ua", lambda b, proc="/proc": True)
+    sev, msg, hint = doctor.check_apple_extension()
+    assert sev == doctor.WARN and "still running" in msg and "Exit" in hint
+    from icp.gui.model import autofill_summary
+    heading, body = autofill_summary(ah.status())
+    assert heading == "Restart your browser to finish" and "patched" in body

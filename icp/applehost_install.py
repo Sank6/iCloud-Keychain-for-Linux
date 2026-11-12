@@ -145,6 +145,27 @@ def exec_binary(desktop_id: str) -> str | None:
     return None
 
 
+def running_without_windows_ua(binary: str, proc="/proc") -> bool:
+    """True when `binary` is running (its main process, not a renderer) without our --user-agent.
+    A browser that keeps running in the background reuses that process for every new window and
+    ignores a flag on the new command line, so the Windows UA silently never applies."""
+    import os
+    main = []
+    for pid in os.listdir(proc):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"{proc}/{pid}/comm") as f:
+                comm = f.read().strip()
+            with open(f"{proc}/{pid}/cmdline", "rb") as f:
+                argv = f.read().split(b"\0")
+        except OSError:
+            continue
+        if comm == os.path.basename(binary)[:15] and not any(a.startswith(b"--type=") for a in argv):
+            main.append(argv)
+    return bool(main) and not any(any(a.startswith(b"--user-agent=") for a in argv) for argv in main)
+
+
 def status() -> dict:
     """Where the Apple-extension integration stands (no network, nothing written):
     {"hosts": [(browser, ok, problem)], "mode": "useragent"|"patched"|None,
@@ -170,11 +191,13 @@ def status() -> dict:
                 problem = "host manifest is not valid JSON"
         out_hosts.append((label, not problem, problem))
     entries = [did for _, did in desktop_ids_for_detected() if windows_ua_active(did)]
+    stale = [did for did in entries
+             if (b := exec_binary(did)) and running_without_windows_ua(b)]
     patched = hosts.DATA / "icp" / "apple-extension"
     patched_ok = patched if (patched / "background.js").exists() else None
     return {"hosts": out_hosts,
             "mode": "useragent" if entries else ("patched" if patched_ok else None),
-            "entries": entries, "patched_copy": patched_ok, "store_extension": find_installed()}
+            "entries": entries, "running_without_ua": stale, "patched_copy": patched_ok, "store_extension": find_installed()}
 
 
 def desktop_ids_for_detected() -> list[tuple[str, str]]:

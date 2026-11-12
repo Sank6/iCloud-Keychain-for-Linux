@@ -46,6 +46,12 @@ def autofill_summary(st: dict) -> tuple[str, str]:
         return "Browser integration needs repair", "\n".join(broken) + "\n\nRun `icp setup`."
     names = ", ".join(label for label, _ok, _p in st["hosts"])
     mode = st["mode"]
+    if mode == "useragent" and st.get("running_without_ua"):
+        return ("Restart your browser to finish",
+                f"{names} is still running from before the Windows user agent was set up, so "
+                "Apple's extension still refuses to start. It may keep running in the "
+                "background: quit it completely (browser menu, Exit), then reopen it from the "
+                "app grid. Or run `icp setup --apple-extension patched`, which needs no restart.")
     if mode == "useragent":
         return ("Apple's extension is ready",
                 f"{names}: starts with a Windows user agent, so Apple's unmodified iCloud "
