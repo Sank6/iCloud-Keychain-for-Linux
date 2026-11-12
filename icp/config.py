@@ -2,6 +2,8 @@
 
 Recognised keys (all optional):
   anisette_url         where the anisette server listens (env ICP_ANISETTE_URL, CLI --anisette)
+  client_info          X-MMe-Client-Info to claim at sign-in (env ICP_CLIENT_INFO); default: Android for a
+                       loopback anisette server, otherwise whatever the server reports
   mirror_collection    Secret Service collection (label) for the logins mirror (ICP_MIRROR_COLLECTION)
 
 Precedence for every value: explicit argument > environment > config file > built-in default."""
@@ -45,6 +47,10 @@ def get(key: str, *, env: str | None = None, explicit: str | None = None,
 def anisette_url(explicit: str | None = None) -> str:
     return get("anisette_url", env="ICP_ANISETTE_URL", explicit=explicit,
                default=DEFAULT_ANISETTE_URL).rstrip("/")
+
+
+def client_info() -> str | None:
+    return get("client_info", env="ICP_CLIENT_INFO")
 
 
 def is_loopback(url: str) -> bool:

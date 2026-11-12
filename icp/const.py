@@ -17,6 +17,14 @@ GSA_CLIENT_INFO = (
     "<com.apple.AuthKit/1 (com.apple.akd/1.0)>"
 )
 
+# Apple requires the claimed client to match the anisette's origin (-80045 otherwise, since
+# 2026-10-12). The local dadoum server generates data with Apple's Android libraries but reports
+# a MacBook, so for a loopback server we claim Android.
+ANDROID_CLIENT_INFO = (
+    "<Pixel 7> <Android;14;UQ1A.240205.002> "
+    "<com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+)
+
 # Default anisette server: loopback only. Override with --anisette, ICP_ANISETTE_URL or
 # `anisette_url` in ~/.config/icp/config.toml (see icp/config.py).
 ANISETTE_PORT = 6969

@@ -5,7 +5,7 @@ import logging
 
 import requests
 
-from .. import config
+from .. import config, const
 from ..errors import AppleError
 
 logger = logging.getLogger(__name__)
@@ -51,8 +51,12 @@ class Anisette:
                 "anisette_url in ~/.config/icp/config.toml."
             ) from e
 
-        self.client_info = data.get("X-MMe-Client-Info") or data.get("X-Mme-Client-Info")
+        reported = data.get("X-MMe-Client-Info") or data.get("X-Mme-Client-Info")
+        self.client_info = reported
         self._fetch_user_agent()
+        # A loopback server is our dadoum container (Android libraries) which reports a Mac.
+        self.client_info = config.client_info() or (
+            const.ANDROID_CLIENT_INFO if config.is_loopback(self.url) else self.client_info)
         out = {k: data[k] for k in self._KEYS if k in data}
         if "X-Apple-I-MD" not in out or "X-Apple-I-MD-M" not in out:
             raise AnisetteError(
