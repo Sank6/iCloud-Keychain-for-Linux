@@ -44,8 +44,49 @@ def install_timer() -> bool:
     return True
 
 
+def apple_extension(mode: str | None) -> None:
+    """Register the host Apple's own extension talks to, and (when asked) make the extension
+    start on Linux. See icp/applehost_install.py for the two modes."""
+    from . import applehost_install as ah
+    done = ah.install()
+    for label, f in done:
+        ui.out(f"  host registered for {label}: {f}")
+    if mode == "useragent":
+        entries = ah.desktop_ids_for_detected()
+        if not entries:
+            ui.warn("no browser desktop entry found to add the Windows user agent to")
+        for label, did in entries:
+            major = ah.browser_major(ah.exec_binary(did) or "") or ah.DEFAULT_MAJOR
+            p = ah.windows_ua_entry(did, major)
+            ui.out(f"  {label}: launcher with a Windows user agent -> {p}")
+        if entries:
+            ui.out("  Quit the browser completely, reopen it from the app grid, and install Apple's\n"
+                   "  'iCloud Passwords' extension from the Chrome Web Store. A browser that is\n"
+                   "  already running ignores the flag. Every site sees a Windows user agent.")
+    elif mode == "patched":
+        for _, did in ah.desktop_ids_for_detected():
+            if ah.restore_entry(did):
+                ui.out(f"  removed the Windows user agent from {did}")
+        out = ah.patch_extension()     # exits with a message when the store version is missing
+        ui.out(f"  patched copy of your installed extension: {out}")
+        ui.out("  chrome://extensions -> Developer mode -> Load unpacked -> that folder, and turn\n"
+               "  the store copy off (both share one extension id). Re-run after Apple updates it.")
+    elif mode == "off":
+        for _, did in ah.desktop_ids_for_detected():
+            if ah.restore_entry(did):
+                ui.out(f"  restored the original launcher {did}")
+    else:
+        st = ah.status()
+        ui.out("  Apple's extension refuses to start on Linux. Choose how to get past that:\n"
+               "    icp setup --apple-extension useragent   unmodified store extension, browser\n"
+               "                                            reports a Windows user agent\n"
+               "    icp setup --apple-extension patched     local patched copy, normal user agent")
+        if st["mode"]:
+            ui.out(f"  currently prepared: {st['mode']}")
+
+
 def run(args) -> int:
-    ui.step("1/3 Browser integration")
+    ui.step("1/4 Browser integration")
     if hosts.agent_source():
         ui.out("  Rust agent: " + ("built and installed" if hosts.build_agent() else
                "not built (needs cargo) - using the Python agent"))
@@ -60,13 +101,16 @@ def run(args) -> int:
     if done:
         ui.out("  Load the extension/ folder unpacked (its id is pinned), then reload it.")
 
-    ui.step("2/3 Anisette server")
+    ui.step("2/4 Apple's iCloud Passwords extension")
+    apple_extension(args.apple_extension)
+
+    ui.step("3/4 Anisette server")
     sev, msg, hint = check_anisette(args.anisette)
     ui.out(f"  {msg}")
     if sev != OK and hint:
         ui.out(f"  -> {hint}")
 
-    ui.step("3/3 Background sync")
+    ui.step("4/4 Background sync")
     if args.no_timer:
         ui.out("  skipped (--no-timer)")
     elif args.yes or ui.confirm_yn("  Install a systemd user timer to sync every 6 hours? [y/N] "):

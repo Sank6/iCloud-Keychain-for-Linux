@@ -4,7 +4,6 @@ Never prompts, never writes, never contacts Apple (it only pokes the local anise
 from __future__ import annotations
 
 import ipaddress
-import os
 import shutil
 import subprocess
 import time
@@ -193,9 +192,26 @@ def check_notify():
         (WARN, "notify-send not found; failures won't pop up", "sudo apt install libnotify-bin")
 
 
+def check_apple_extension():
+    """Apple's own iCloud Passwords extension: host registered and a way past its Linux gate."""
+    from . import applehost_install as ah
+    st = ah.status()
+    if not st["hosts"]:
+        return WARN, "no Chromium-family browser found for Apple's iCloud Passwords extension", ""
+    broken = [f"{label}: {problem}" for label, ok, problem in st["hosts"] if not ok]
+    if broken:
+        return FAIL, "Apple extension host: " + "; ".join(broken), "run `icp setup`"
+    if st["mode"] is None:
+        return WARN, ("Apple's iCloud Passwords extension host is registered, but the extension "
+                      "refuses to start on Linux"), \
+            "run `icp setup --apple-extension useragent` (or `patched`)"
+    return OK, f"Apple's iCloud Passwords extension host is ready ({st['mode']} mode)", ""
+
+
 def run(anisette_url: str | None = None) -> int:
     results = [check_anisette(anisette_url), check_keyring(), check_signin(), *check_files(),
-               check_sync_status(), *check_hosts(), check_timer(), check_notify()]
+               check_sync_status(), *check_hosts(), check_apple_extension(), check_timer(),
+               check_notify()]
     for sev, msg, hint in results:
         print(f" {_MARK[sev]} {msg}")
         if hint:

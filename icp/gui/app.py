@@ -130,6 +130,7 @@ class Window(Adw.ApplicationWindow):
         m = Gio.Menu()
         m.append("Sync now", "app.sync")
         m.append("Sign in to iCloud\u2026", "app.login")
+        m.append("Browser autofill\u2026", "app.autofill")
         m.append("Refresh keyring mirror", "app.mirror")
         m.append("Quit", "app.quit")
         return m
@@ -378,6 +379,19 @@ class Window(Adw.ApplicationWindow):
     def _banner_clicked(self, *_):
         self.open_login() if self.banner_action == "login" else self.run_cli("sync", "--force")
 
+    def show_autofill(self):
+        """Status of Apple's own extension (host registered, how it gets past the Linux gate)."""
+        from .. import applehost_install
+        heading, body = model.autofill_summary(applehost_install.status())
+        if hasattr(Adw, "AlertDialog"):
+            dlg = Adw.AlertDialog.new(heading, body)
+            dlg.add_response("close", "Close")
+            dlg.present(self)
+        else:
+            dlg = Adw.MessageDialog.new(self, heading, body)
+            dlg.add_response("close", "Close")
+            dlg.present()
+
     def open_login(self):
         """Start the sign-in window (a separate process, so a crash or a stuck network call can't
         take this window down) and refresh when it ends."""
@@ -438,6 +452,7 @@ class App(Adw.Application):
         from gi.repository import Gio
         for name, fn in (("sync", lambda *_: self._window().run_cli("sync", "--force")),
                          ("login", lambda *_: self._window().open_login()),
+                         ("autofill", lambda *_: self._window().show_autofill()),
                          ("mirror", lambda *_: self._window().run_cli("mirror")),
                          ("quit", lambda *_: self.quit())):
             act = Gio.SimpleAction.new(name, None)

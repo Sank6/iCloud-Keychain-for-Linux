@@ -27,7 +27,6 @@ import requests
 
 from .. import config, const, net, paths
 from . import apple_tls
-from ..errors import AppleError
 from .anisette import Anisette, AnisetteError
 
 logger = logging.getLogger(__name__)

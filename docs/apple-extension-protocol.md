@@ -41,7 +41,13 @@ Host -> ext: `iv||ct||tag` (the two directions differ in the extension's code).
 - cmd 16/17 (TOTP codes): **UNVERIFIED and not offered** (`canFillOneTimeCodes:false`).
 - cmd 10 is sent when a request arrives with no valid session; cmd 9 while PIN pairing is locked out.
 
+## Verified end to end on Linux (extension 3.4.0, Chromium 157)
+Both ways past the OS gate work with this host: (a) the unmodified Web Store extension in a browser
+started with `--user-agent` set to a Windows UA (`checkForValidOS` matches `\(Windows\s*\w*\s*(\d*)\.(\d*)`,
+state goes `NotInSession` -> `MSG1Set` -> `SessionKeySet` after the PIN), and (b) a copy with the gate
+short-circuited. A `CmdGetLoginNames4URL` lookup returned `STATUS 0` and the matching entry.
+
 ## UNVERIFIED
-Behaviour in the user's real profile; Apple's real-host message for non-zero `STATUS` values other than
+Behaviour in a long-lived real profile; Apple's real-host message for non-zero `STATUS` values other than
 0/3; TOTP; `operatingSystem` capability values (we send `{name:"Linux"}`); whether Apple's real host keeps
 sessions across browser restarts (ours does not: every browser start pairs again).

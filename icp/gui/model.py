@@ -35,6 +35,34 @@ def visible(creds, query: str) -> list:
     return sorted((c for c in creds if matches(c, query)), key=sort_key)
 
 
+def autofill_summary(st: dict) -> tuple[str, str]:
+    """Heading and body for the "Browser autofill" panel, from applehost_install.status()."""
+    if not st["hosts"]:
+        return ("No supported browser found",
+                "Install a Chromium-based browser (Chrome, Chromium, Helium, Brave, Edge...), "
+                "open it once, then run `icp setup`.")
+    broken = [f"{label}: {problem}" for label, ok, problem in st["hosts"] if not ok]
+    if broken:
+        return "Browser integration needs repair", "\n".join(broken) + "\n\nRun `icp setup`."
+    names = ", ".join(label for label, _ok, _p in st["hosts"])
+    mode = st["mode"]
+    if mode == "useragent":
+        return ("Apple's extension is ready",
+                f"{names}: starts with a Windows user agent, so Apple's unmodified iCloud "
+                "Passwords extension from the Chrome Web Store works. Quit the browser and "
+                "reopen it from the app grid if you have not since running setup. Pair it with "
+                "the 6-digit code shown in a notification.")
+    if mode == "patched":
+        return ("Apple's extension is ready (patched copy)",
+                f"{names}: load the patched copy once (chrome://extensions, Developer mode, "
+                "Load unpacked) and turn the store version off. Re-run "
+                "`icp setup --apple-extension patched` after Apple updates the extension.")
+    return ("Apple's extension cannot start on Linux yet",
+            "Apple's iCloud Passwords extension refuses to run on Linux. Pick one:\n"
+            "  icp setup --apple-extension useragent   (unmodified store extension)\n"
+            "  icp setup --apple-extension patched     (local patched copy)")
+
+
 @dataclass
 class SyncState:
     kind: str          # "ok" | "stale" | "failing" | "signin" | "never"

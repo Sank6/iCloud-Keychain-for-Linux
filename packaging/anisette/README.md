@@ -1,3 +1,8 @@
+> **Apple rejects this Docker image since October 2026.** It generates anisette data with Apple's
+> *Android* libraries and sign-in fails with `-80045`. Use a remote v3 server backed by a real Mac
+> or a local server that runs Apple's Windows/Mac code; see the main README. These unit files are
+> kept for a local server you trust that Apple accepts.
+
 # Anisette server, loopback only
 
 `icp` needs "anisette" data (machine identifiers Apple's sign-in expects). Until it can be produced

@@ -1,7 +1,6 @@
 """Typed, actionable Apple errors, 2FA retry, the sync failure flags and `icp logout`. No network."""
 import argparse
 import os
-import plistlib
 import tempfile
 import unittest
 from unittest import mock

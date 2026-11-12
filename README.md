@@ -91,6 +91,33 @@ down live.
 
 ## Set up the browser extension
 
+Two options. Both fill from your local vault and neither contacts Apple.
+
+### Apple's own "iCloud Passwords" extension (Chromium browsers)
+
+Install **iCloud Passwords** from the Chrome Web Store, then run `icp setup`. Apple's extension
+refuses to start on Linux (it only runs on macOS or a Windows user agent), so choose how to get
+past that:
+
+```
+icp setup --apple-extension useragent    # the unmodified store extension; the browser reports
+                                         # a Windows user agent (quit and reopen it afterwards)
+icp setup --apple-extension patched      # a local patched copy; the browser keeps its real UA
+```
+
+- `useragent` rewrites the browser's launcher so it starts with `--user-agent=...Windows...`. The
+  store extension keeps auto-updating; every site in that browser sees a Windows user agent. A
+  browser that is already running ignores the flag, so quit it completely first.
+  `icp setup --apple-extension off` puts the original launcher back.
+- `patched` copies your *own* installed extension and changes one function (its OS check). Load it
+  with **Developer mode -> Load unpacked** and turn the store copy off; re-run after Apple updates it.
+
+The first time, the extension shows a 6-digit pairing code in a desktop notification: type it into
+the extension's popup. The Passwords app (**Browser autofill...**) and `icp doctor` show what is set
+up. The host is read-only; see `docs/apple-extension-protocol.md` and `SECURITY.md`.
+
+### This project's own extension
+
 The `extension/` folder works in Chromium based browsers and Firefox.
 
 ### Chrome, Chromium, Helium, or Brave

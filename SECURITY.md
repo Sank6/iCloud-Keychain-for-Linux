@@ -62,6 +62,9 @@ browser extension. This file says what that does and does not protect against.
   after 8 hours and are not persisted, so every browser start re-pairs.
 - **Scope**: read-only. Save/update/TOTP requests are ignored. Lookups reuse the agent, so they obey
   its lock state and idle lock.
-- **Patched extension copy**: required on Linux because Apple's extension refuses to start (OS gate).
-  The copy is built locally from your own installed extension and is not auto-updated; re-run
-  `python -m icp.applehost_install patch-extension` after an update. Only the OS check is changed.
+- **Getting past Apple's OS gate**: Apple's extension refuses to start on Linux. `icp setup
+  --apple-extension useragent` starts the browser with a Windows user agent (the store extension
+  stays unmodified and auto-updates; every site in that browser sees a Windows UA, and only a
+  desktop entry we wrote is ever removed). `--apple-extension patched` builds a local copy from
+  your own installed extension with only the OS check changed; it is not auto-updated and is not
+  signed, so re-run it after an update. Apple's code is never shipped in this repo.

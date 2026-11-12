@@ -1011,6 +1011,10 @@ def main(argv=None) -> int:
 
     up = sub.add_parser("setup", help="register the browser host, anisette check, sync timer")
     up.add_argument("-y", "--yes", action="store_true", help="don't ask before starting things")
+    up.add_argument("--apple-extension", choices=["useragent", "patched", "off"],
+                    help="make Apple's own iCloud Passwords extension work on Linux: 'useragent' "
+                         "(browser reports Windows; the store extension stays unmodified), "
+                         "'patched' (local patched copy) or 'off' (undo the launcher change)")
     up.add_argument("--no-timer", action="store_true", help="don't install the systemd timer")
     up.add_argument("--extension-id", action="append",
                     help="also allow this extension id (e.g. an unpacked build with another id)")
