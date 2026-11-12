@@ -6,33 +6,53 @@ private, encrypted store on your machine. A browser extension fills them in for 
 Passwords app on a Mac or iPhone. Your Hide My Email addresses show up too. This project is a 
 reverse engineering attempt and **is not affiliated with Apple in any way**.
 
-> This is **untested** with Advanced Data Protection enabled. Any help with this will be appreciated -
-> let me know if you have any issues with ADP enabled (also lmk if it works). Please don't spam escrow attempts!
+> Advanced Data Protection works (signing in needs the code from one of your trusted devices; an
+> account with ADP refuses SMS codes and clients that claim an old macOS). Please don't spam
+> sign-in or escrow attempts: repeated failures make Apple's blocks last longer.
 
 ## What you'll need
 
-A configured Anisette server (recommend [Anisette-on-Wine](https://github.com/Sank6/Anisette-on-Wine) to run locally on Linux or [omnisette-server](https://github.com/SideStore/omnisette-server), or any trusted third party anisette server):
+An anisette server (see below for which ones Apple accepts). Tell `icp` where it is:
 
 ```
 export ICP_ANISETTE_URL="https://your-anisette-server.example"
 ```
 
-The configured URL must return anisette headers as JSON to a `GET` request. Its
-`/v3/client_info` endpoint must return `client_info` and `user_agent`.
+(or `--anisette URL`, or `anisette_url = "..."` in `~/.config/icp/config.toml`).
+
+**Which anisette server works.** Since October 2026 Apple refuses anisette generated with Apple's
+*Android* libraries (`-80045`), which is what the popular `dadoum/anisette-v3-server` Docker image
+runs, and it blocks the shared identity of public v1 servers. What works:
+
+- A **remote anisette v3 server backed by a real Mac** (e.g. `https://new.ani.sidestore.io`). With
+  a v3 server `icp` generates its own random device identity, registers it with Apple from this
+  machine, and keeps it in `~/.config/icp/anisette-v3.json` (mode 0600). The server only runs
+  Apple's ADI code for you; nobody shares your identity, and it never sees your Apple ID or
+  password (it does see the anisette requests).
+- A **local** server that runs Apple's Windows/Mac code, such as
+  [Anisette-on-Wine](https://github.com/Sank6/Anisette-on-Wine): nothing leaves your machine.
+
+The server must answer `GET /` with anisette headers (v1) or speak the v3 protocol, and serve
+`/v3/client_info` (`client_info` and `user_agent`). `icp` picks the protocol itself: v1 for a
+loopback server, v3 for any other; force it with `anisette_protocol = "v1"|"v3"` (or
+`ICP_ANISETTE_PROTOCOL`). `icp doctor` checks the server.
+
+You will also need this repo. Clone it / download it as you wish.
 
 ## Install
 
 From the project folder:
 
 ```
-python3 -m venv .venv && .venv/bin/pip install -e .
+python3 -m venv --system-site-packages .venv && .venv/bin/pip install -e .
 source .venv/bin/activate
 ```
 
 ## Sign in
 
 ```
-icp login
+icp login --gui      # a sign-in window, no terminal needed (also in the Passwords app and the extension popup)
+icp login            # the same in a terminal
 ```
 
 This will walk you through the login: enter your Apple ID, password, and the 2FA code Apple
@@ -45,8 +65,10 @@ it can join your keychain.
   perfectly safe.
 - Your 2FA code and passcode are used immediately and **never saved**. Your password is kept
   **encrypted on your computer** (in your login keyring) so `icp` can stay signed in without
-  asking you again - it never leaves your machine. Your access tokens and passwords are stored
-  the same way.
+  asking you again - it never leaves your machine. Your Apple ID and password are a normal
+  Secret Service item (visible in Seahorse, removed by `icp logout`); tokens are stored encrypted.
+- Wrong password, a mistyped 2FA code and Cancel are handled in the window; nothing is sent to
+  Apple when you cancel.
 
 ## Browse your passwords
 
@@ -68,6 +90,33 @@ lists the current 6-digit code next to the login with the seconds left before it
 down live.
 
 ## Set up the browser extension
+
+Two options. Both fill from your local vault and neither contacts Apple.
+
+### Apple's own "iCloud Passwords" extension (Chromium browsers)
+
+Install **iCloud Passwords** from the Chrome Web Store, then run `icp setup`. Apple's extension
+refuses to start on Linux (it only runs on macOS or a Windows user agent), so choose how to get
+past that:
+
+```
+icp setup --apple-extension useragent    # the unmodified store extension; the browser reports
+                                         # a Windows user agent (quit and reopen it afterwards)
+icp setup --apple-extension patched      # a local patched copy; the browser keeps its real UA
+```
+
+- `useragent` rewrites the browser's launcher so it starts with `--user-agent=...Windows...`. The
+  store extension keeps auto-updating; every site in that browser sees a Windows user agent. A
+  browser that is already running ignores the flag, so quit it completely first.
+  `icp setup --apple-extension off` puts the original launcher back.
+- `patched` copies your *own* installed extension and changes one function (its OS check). Load it
+  with **Developer mode -> Load unpacked** and turn the store copy off; re-run after Apple updates it.
+
+The first time, the extension shows a 6-digit pairing code in a desktop notification: type it into
+the extension's popup. The Passwords app (**Browser autofill...**) and `icp doctor` show what is set
+up. The host is read-only; see `docs/apple-extension-protocol.md` and `SECURITY.md`.
+
+### This project's own extension
 
 The `extension/` folder works in Chromium based browsers and Firefox.
 
@@ -137,7 +186,10 @@ show     browse and search your passwords and Hide My Email addresses
 sync     refresh your passwords now (--background for unattended runs, --force)
 status   last sync, next allowed sync, whether a login is needed (--json)
 diag     read-only diagnostics: zones, groups (counts only, no secrets)
-logout   sign out (use --wipe-device to also forget this device)
+logout   sign out: clears the session, the saved Apple ID and the keyring mirror
+         (--purge-vault, --wipe-device, --keep-mirror; --reset-keys after losing the keyring entry)
+doctor   checklist: anisette (and whether it is exposed on your LAN), keyring, sign-in, hosts
+mirror   copy logins into the keyring now (Seahorse); gui opens the Passwords window
 ```
 
 ## Credits

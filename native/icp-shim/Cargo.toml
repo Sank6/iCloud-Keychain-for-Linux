@@ -1,0 +1,13 @@
+[package]
+name = "icp-shim"
+version = "0.1.0"
+edition = "2021"
+description = "Native-messaging shim: forwards browser frames to the icp agent over a Unix socket"
+
+[dependencies]
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+panic = "abort"

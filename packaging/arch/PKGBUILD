@@ -1,0 +1,30 @@
+# UNTESTED sketch of an Arch package. Build with `makepkg -si` from this directory after adjusting
+# `source`/checksums. Installs the Python package, the Rust agent + shim, and the desktop files.
+pkgname=icp-linux
+pkgver=0.0.1
+pkgrel=1
+pkgdesc="Unofficial iCloud Keychain client for Linux (autofill extension, agent, GTK app)"
+arch=(x86_64)
+license=(MIT)
+depends=(python python-requests python-srp python-cryptography python-pynacl python-secretstorage
+         python-gobject gtk4 libadwaita gnome-keyring)
+makedepends=(cargo python-build python-installer python-setuptools)
+source=("$pkgname::git+file://$PWD/../..")
+sha256sums=(SKIP)
+
+build() {
+  cd "$pkgname"
+  python -m build --wheel --no-isolation
+  (cd native/icp-agent && cargo build --release --locked 2>/dev/null || cargo build --release)
+  (cd native/icp-shim && cargo build --release)
+}
+
+package() {
+  cd "$pkgname"
+  python -m installer --destdir="$pkgdir" dist/*.whl
+  install -Dm755 native/icp-agent/target/release/icp-agent "$pkgdir/usr/lib/icp/icp-agent"
+  install -Dm755 native/icp-shim/target/release/icp-shim   "$pkgdir/usr/lib/icp/icp-shim"
+  install -d "$pkgdir/usr/share/icp"
+  cp -r extension "$pkgdir/usr/share/icp/extension"
+  install -Dm644 LICENSE.md "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

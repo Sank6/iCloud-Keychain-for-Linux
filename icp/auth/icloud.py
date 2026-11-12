@@ -5,8 +5,7 @@ import base64
 import logging
 import plistlib as plist
 
-import requests
-
+from .. import net
 from ..errors import AppleError
 from .anisette import Anisette
 from .device import Device
@@ -22,9 +21,17 @@ ICLOUD_SERVICE_IDENTITY = "com.apple.AOSKit/282 (com.apple.accountsd/113)"
 
 
 class ICloudError(AppleError):
-    def __init__(self, message: str = "", *, retry_after: float | None = None):
+    def __init__(self, message: str = "", *, retry_after: float | None = None, kind: str = ""):
         super().__init__(message)
         self.retry_after = retry_after
+        self.kind = kind   # icp.net error kind when the HTTP layer failed ("blocked", "network", ...)
+
+
+def _post(what: str, url: str, **kw):
+    try:
+        return net.request("post", url, **kw)
+    except net.AppleNetError as e:
+        raise ICloudError(f"{what}: {e}", retry_after=e.retry_after, kind=e.kind) from e
 
 
 class ICloudAuthExpired(ICloudError):
@@ -56,9 +63,14 @@ def login_mobileme(username: str, pet: str, adsid: str, client_id: str,
     headers.update(identity_headers(device, anisette))
     headers["Authorization"] = _basic(username, pet)  # apple-id:PET (NOT dsid:PET)
 
-    resp = requests.post(url, headers=headers, data=body, timeout=20)
+    resp = _post("loginDelegates", url, headers=headers, data=body)
     logger.debug("loginDelegates -> HTTP %s (%d bytes)", resp.status_code, len(resp.content))
-    data = plist.loads(resp.content)
+    try:
+        data = plist.loads(resp.content)
+    except Exception:  # noqa: BLE001 - HTML/empty error page
+        if ne := net.auth_error(resp, "the token exchange"):
+            raise ICloudError(f"loginDelegates: {ne}", kind=ne.kind) from None
+        raise ICloudError(f"loginDelegates: unreadable reply (HTTP {resp.status_code})") from None
 
     mm = data.get("delegates", {}).get("com.apple.mobileme", {})
     status = mm.get("status", data.get("status"))
@@ -90,16 +102,11 @@ def fetch_account_settings(record: dict, device: Device, anisette: Anisette,
     }
     headers.update(identity_headers(device, anisette))
 
-    try:
-        resp = requests.post(url, headers=headers, data="", timeout=20)
-    except requests.RequestException as e:
-        raise ICloudError(f"network error talking to account settings: {e}") from e
+    resp = _post("account settings", url, headers=headers, data="")
     logger.debug("get_account_settings -> HTTP %s (%d bytes)",
                  resp.status_code, len(resp.content))
-    if resp.status_code == 429 or resp.status_code >= 500:
-        from ..ratelimit import retry_after_seconds
-        raise ICloudError(f"account settings: HTTP {resp.status_code} (throttled or unavailable)",
-                          retry_after=retry_after_seconds(resp))
+    if resp.status_code == 403 and (ne := net.auth_error(resp, "the account request")):
+        raise ICloudError(f"account settings: {ne}", kind=ne.kind)
     try:
         return resp.status_code, plist.loads(resp.content)
     except Exception as e:

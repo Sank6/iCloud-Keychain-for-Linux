@@ -13,6 +13,7 @@ import requests
 import srp._pysrp as srp
 import urllib3
 
+from .. import net
 from ..errors import AppleError
 
 srp.rfc5054_enable()
@@ -123,15 +124,21 @@ class WebAuthSession:
             if resp.headers.get(header):
                 self.session_data[key] = resp.headers[header]
 
+    def _send(self, method: str, url: str, **kw) -> requests.Response:
+        try:
+            return net.request(method, url, session=self.http, timeout=(5, 20), **kw)
+        except net.AppleNetError as e:
+            raise WebAuthError(str(e)) from e
+
     def _get(self, url: str, *, headers: dict, params: dict | None = None) -> requests.Response:
-        resp = self.http.get(url, headers=headers, params=params, timeout=20)
+        resp = self._send("get", url, headers=headers, params=params)
         self._capture(resp)
         return resp
 
     def _post(self, url: str, *, headers: dict, params: dict | None = None,
               body: dict | None = None) -> requests.Response:
         data = json.dumps(body) if body is not None else None
-        resp = self.http.post(url, headers=headers, params=params, data=data, timeout=20)
+        resp = self._send("post", url, headers=headers, params=params, data=data)
         self._capture(resp)
         return resp
 

@@ -10,13 +10,14 @@ import hashlib
 import hmac
 import logging
 import plistlib as plist
+import re
 
-import requests
+import requests  # noqa: F401 - tests patch gsa.requests.*
 import srp._pysrp as srp
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from .. import const
+from .. import const, net
 from . import apple_tls
 from .anisette import Anisette
 from .device import Device
@@ -30,7 +31,21 @@ logger = logging.getLogger(__name__)
 
 
 class GSAError(AppleError):
-    pass
+    """A GrandSlam failure. `kind` mirrors icp.net's error kinds ("blocked", "network", ...) when
+    the cause was the HTTP layer; `retry_after` is Apple's requested delay in seconds."""
+
+    def __init__(self, message: str = "", *, kind: str = "", retry_after: float | None = None):
+        super().__init__(message)
+        self.kind, self.retry_after = kind, retry_after
+
+
+def _net(operation: str, **kw):
+    """requests-style call through icp.net, with network-layer errors re-raised as GSAError."""
+    try:
+        return net.request(**kw)
+    except net.AppleNetError as e:
+        cls = GSAServiceError if e.kind in ("server", "network") else GSAError
+        raise cls(f"GSA {operation}: {e}", kind=e.kind, retry_after=e.retry_after) from e
 
 
 class GSAServiceError(GSAError):
@@ -67,39 +82,31 @@ class GSAClient:
         }
         body["Request"].update(parameters)
         operation = parameters.get("o", "request")
+        # _cpd() above fetched anisette, so its reported client identity is known by now.
         headers = {
-            "Content-Type": "text/x-xml-plist",
+            "Content-Type": const.GSA_CONTENT_TYPE,
             "Accept": "*/*",
             "Connection": "close",
             "User-Agent": self.anisette.user_agent,
             "X-MMe-Client-Info": self.anisette.client_info,
         }
-        try:
-            resp = apple_tls.request_once(
-                "POST", const.GSA_ENDPOINT,
-                headers=headers, data=plist.dumps(body), timeout=10,
-            )
-        except (requests.ConnectionError, requests.Timeout) as e:
-            raise GSAServiceError(f"GSA {operation} request failed: {e}") from e
-        except requests.RequestException as e:
-            raise GSAError(f"GSA {operation} request failed: {e}") from e
+        resp = _net(operation, method="post", url=const.GSA_ENDPOINT, headers=headers,
+                    data=plist.dumps(body), session=apple_tls.new_session())
 
         try:
             payload = plist.loads(resp.content)
-        except (plist.InvalidFileException, ValueError, TypeError) as e:
-            content_type = resp.headers.get("Content-Type", "unknown content type")
-            retry_after = resp.headers.get("Retry-After")
-            retry_hint = f", Retry-After {retry_after}" if retry_after else ""
-            error_type = GSAServiceError if resp.status_code >= 500 else GSAError
-            raise error_type(
-                f"GSA {operation} returned HTTP {resp.status_code}; expected a plist, "
-                f"got {content_type} ({len(resp.content)} bytes{retry_hint})"
-            ) from e
-        response = payload.get("Response") if isinstance(payload, dict) else None
-        if not isinstance(response, dict):
-            raise GSAError(
-                f"GSA {operation} returned HTTP {resp.status_code} without a Response dictionary"
-            )
+            response = payload["Response"]
+            if not isinstance(response, dict):
+                raise ValueError("no Response dictionary")
+        except Exception:
+            if ne := net.auth_error(resp, "the sign-in request"):
+                raise GSAError(f"GSA {operation} failed: {ne}", kind=ne.kind) from None
+            cls = GSAServiceError if resp.status_code >= 500 else GSAError
+            raise cls(
+                f"GSA {operation} failed: HTTP {resp.status_code}: non-plist reply "
+                f"({len(resp.content)} bytes, {resp.headers.get('Content-Type', 'unknown type')})",
+                kind="protocol",
+            ) from None
 
         if not resp.ok:
             error_type = GSAServiceError if resp.status_code >= 500 else GSAError
@@ -136,7 +143,8 @@ class GSAClient:
         self.last_complete_response = complete
         logger.debug("GSA complete response keys: %s", list(complete))
         if "M2" not in complete:
-            raise GSAError(f"{stage}: complete failed: {_status(complete)}")
+            raise GSAError(f"{stage}: complete failed: {_status(complete)}",
+                           kind=_status_kind(complete))
         usr.verify_session(complete["M2"])
         if not usr.authenticated():
             raise GSAError("server session verification failed (imposter?)")
@@ -147,28 +155,24 @@ class GSAClient:
         return complete, spd
 
     def trigger_trusted_factor(self, dsid: str, idms_token: str) -> None:
-        apple_tls.get(
-            "https://gsa.apple.com/auth/verify/trusteddevice",
-            headers=self._twofa_headers(dsid, idms_token),
-            timeout=10,
-        )
+        resp = _net("2FA trigger", method="get",
+                    url="https://gsa.apple.com/auth/verify/trusteddevice",
+                    headers=self._twofa_headers(dsid, idms_token), session=apple_tls.session())
+        logger.debug("2FA trigger reply: HTTP %s content-type=%s body=%s", resp.status_code,
+                     resp.headers.get("Content-Type"), _mask(resp.text))
 
     def submit_trusted_factor(self, code: str, dsid: str, idms_token: str) -> None:
         h = self._twofa_headers(dsid, idms_token)
         h["security-code"] = code
-        resp = apple_tls.get(
-            "https://gsa.apple.com/grandslam/GsService2/validate",
-            headers=h, timeout=10,
-        )
+        resp = _net("2FA validate", method="get",
+                    url="https://gsa.apple.com/grandslam/GsService2/validate",
+                    headers=h, session=apple_tls.session())
         _check_code(resp, "trusted-device")
 
     def trigger_sms_factor(self, dsid: str, idms_token: str, phone_id: int = 1) -> None:
-        apple_tls.put(
-            "https://gsa.apple.com/auth/verify/phone/",
-            json={"phoneNumber": {"id": phone_id}, "mode": "sms"},
-            headers=self._twofa_headers(dsid, idms_token),
-            timeout=10,
-        )
+        _net("SMS trigger", method="put", url="https://gsa.apple.com/auth/verify/phone/",
+             json={"phoneNumber": {"id": phone_id}, "mode": "sms"},
+             headers=self._twofa_headers(dsid, idms_token), session=apple_tls.session())
 
     def submit_sms_factor(self, code: str, dsid: str, idms_token: str, phone_id: int = 1) -> None:
         body = {
@@ -176,17 +180,16 @@ class GSAClient:
             "mode": "sms",
             "securityCode": {"code": code},
         }
-        resp = apple_tls.post(
-            "https://gsa.apple.com/auth/verify/phone/securitycode",
-            json=body, headers=self._twofa_headers(dsid, idms_token),
-            timeout=10,
-        )
+        resp = _net("SMS validate", method="post",
+                    url="https://gsa.apple.com/auth/verify/phone/securitycode",
+                    json=body, headers=self._twofa_headers(dsid, idms_token),
+                    session=apple_tls.session())
         _check_code(resp, "SMS")
 
     def _twofa_headers(self, dsid: str, idms_token: str) -> dict:
         identity_token = base64.b64encode(f"{dsid}:{idms_token}".encode()).decode()
         h = {
-            "Content-Type": "text/x-xml-plist",
+            "Content-Type": const.GSA_CONTENT_TYPE,
             "User-Agent": self.anisette.user_agent,
             "Accept": "text/x-xml-plist",
             "Accept-Language": "en-us",
@@ -197,6 +200,11 @@ class GSAClient:
         }
         h.update(identity_headers(self.device, self.anisette))
         return h
+
+
+def _mask(text: str, limit: int = 700) -> str:
+    """Body of an Apple reply for the debug log with every digit masked (phone numbers, codes)."""
+    return re.sub(r"\d", "#", " ".join((text or "").split()))[:limit]
 
 
 def _encrypt_password(password: str, salt: bytes, iterations: int, protocol: str) -> bytes:
@@ -222,6 +230,15 @@ def _decrypt_cbc(usr, data: bytes) -> bytes:
     return unpadder.update(data) + unpadder.finalize()
 
 
+# Apple status codes meaning "Apple ID or password is incorrect" (seen from GrandSlam/pypush).
+_BAD_CREDENTIALS = {-20101, -22406}
+
+
+def _status_kind(r: dict) -> str:
+    ec = r.get("Status", r).get("ec")
+    return "credentials" if ec in _BAD_CREDENTIALS else ""
+
+
 def _status(r: dict) -> str:
     s = r.get("Status", r)
     return f"ec={s.get('ec')} em={s.get('em')!r} au={s.get('au')!r}"
@@ -234,4 +251,5 @@ def _check_code(resp, kind: str) -> None:
     except Exception:  # noqa: BLE001 - a rejected identity token answers 401 with no body
         body = {}
     if body.get("ec") or not resp.ok:
-        raise GSAError(f"{kind} 2FA code rejected: {body.get('em') or resp.status_code}")
+        raise GSAError(f"{kind} 2FA code rejected: {body.get('em') or resp.status_code}",
+                       kind="code")

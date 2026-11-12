@@ -18,7 +18,8 @@ import subprocess
 from . import ui
 from .. import diag
 from ..auth import grandslam as auth, icloud, session
-from ..auth.anisette import Anisette, AnisetteError
+from ..auth.anisette import AnisetteError
+from ..auth.anisette_v3 import open_anisette
 from ..auth.device import Device
 from ..auth.gsa import GSAClient, GSAError
 from ..auth.session import SessionError
@@ -50,7 +51,7 @@ def _mint_pet(device, anisette, username: str, password: str) -> str:
     """Mint a fresh GSA PET (password-equivalent token) for escrowproxy Basic auth. Silent on an
     already-trusted device (no 2FA re-prompt). Kept fresh per phase because the PET is short-lived."""
     gsa = GSAClient(device, anisette)
-    spd = auth.authenticate(gsa, username, password, _twofa_prompt)
+    spd = auth.authenticate(gsa, username, password, _twofa_prompt, notify=ui.warn)
     _, pet, _ = auth.extract_pet(spd)
     return pet
 
@@ -123,7 +124,8 @@ def _mint_tokens(record: dict, username: str, password: str, device, anisette,
     mmeAuthToken; update `record`'s token fields in place. Preserves any already-cached
     cloudKitUserId (so a re-auth need not re-run ckAppInit). Raises on failure."""
     gsa = GSAClient(device, anisette)
-    spd = auth.authenticate(gsa, username, password, twofa, interactive=interactive)
+    spd = auth.authenticate(gsa, username, password, twofa, interactive=interactive,
+                            notify=ui.warn)
     dsid, pet, pet_expiry = auth.extract_pet(spd)
     if debug and log is not None:
         diag.dump(log, "GSA init response", gsa.last_init_response)
@@ -165,6 +167,12 @@ def _mint_tokens(record: dict, username: str, password: str, device, anisette,
         mme["cloudKitUserId"] = ck_uid
 
 
+def _login_failure_text(e) -> str:
+    if getattr(e, "kind", "") == "credentials":
+        return "sign-in failed: Apple says the Apple ID or password is incorrect"
+    return f"sign-in failed: {e}"
+
+
 def _noninteractive_twofa(kind: str) -> str:
     """2FA callback for the unattended sync path: never blocks on stdin."""
     raise GSAError(
@@ -201,12 +209,16 @@ def cmd_login(args) -> int:
     re-authentication, so it is never prompted twice. The irreversible escrow recovery is
     still gated by an explicit y/N prompt - answer No to stop after sign-in with tokens saved.
     """
+    if getattr(args, "gui", False) and not getattr(args, "_in_gui", False):
+        from ..gui import login as gui_login
+        args._in_gui = True
+        return gui_login.run(args)
     debug_path = diag.start() if args.debug else None
     log = logging.getLogger("icp.login")
 
     device = Device.load_or_create()
     try:
-        anisette = Anisette(args.anisette)
+        anisette = open_anisette(args.anisette)
         _ = anisette.client_info
         anisette.headers()
     except AnisetteError as e:
@@ -239,7 +251,7 @@ def cmd_login(args) -> int:
         _mint_tokens(record, username, password, device, anisette, log=log, debug=args.debug)
         mme_ok = True
     except (GSAError, AnisetteError) as e:
-        ui.err(f"sign-in failed: {e}")
+        ui.err(_login_failure_text(e), kind=getattr(e, "kind", ""))
         return 1
     except icloud.ICloudError as e:
         log.warning("loginDelegates failed: %s", e)
@@ -390,7 +402,7 @@ def _show_plain(store, args) -> int:
     creds = store.all()
     if query:
         creds = [c for c in creds if _match(c, query)]
-    aliases = _fetch_aliases_best_effort(sys.stdin.isatty())
+    aliases = _fetch_aliases_best_effort(ui.interactive())
     if query:
         aliases = [a for a in aliases if _alias_match(a, query)]
 
@@ -563,6 +575,7 @@ def _join_and_sync(s: dict, device, anisette, username: str, password: str) -> i
             ui.err(f"sync failed: {e}")
             return 1
         ui.out(f"Synced {n} credential(s) into the vault.")
+        _mirror_vault(interactive=ui.interactive())
         return 0
 
     escrow_host = (s.get("webservices") or {}).get("keychainsync")
@@ -634,6 +647,40 @@ def _join_and_sync(s: dict, device, anisette, username: str, password: str) -> i
 
 
 def cmd_sync(args) -> int:
+    """Run a sync; pacing, failures and the "sign-in needed" state live in icp/ratelimit.py (which
+    also publishes sync-status.json for the popup, the agent and the GTK app)."""
+    from .. import net, ratelimit, status
+    ui.last_error = None
+    args.background = _unattended(args)
+    net.set_background(args.background)
+    try:
+        rc = _sync(args)
+    except Exception as e:  # recorded, then re-raised so the traceback is still visible
+        ratelimit.record_failure(ratelimit.load(), f"sync crashed: {type(e).__name__}: {e}")
+        raise
+    if rc not in (0, EXIT_SKIPPED):
+        status.maybe_notify(ratelimit.load())
+    return rc
+
+
+def _unattended(args) -> bool:
+    """--background, or a run with no terminal that was not explicitly forced. The second rule
+    protects against launchers that forget the flag (an older agent's sync-cmd, a cron line): such
+    a run must never sign in with the password or prompt for 2FA."""
+    return bool(getattr(args, "background", False)) or (
+        not sys.stdin.isatty() and not getattr(args, "force", False))
+
+
+def _failure_flags(e) -> dict:
+    """record_failure() keyword flags for an exception from the Apple layers: blocked/auth errors
+    need a sign-in; offline and open-circuit errors are transient and not counted."""
+    kind = getattr(e, "kind", "")
+    return {"auth": kind in ("blocked", "auth") or (isinstance(e, GSAError) and kind != "network"),
+            "transient": kind in ("network", "circuit"),
+            "retry_after": getattr(e, "retry_after", None), "jitter": 0.1}
+
+
+def _sync(args) -> int:
     """Fetch the keychain zones and decrypt them into the vault (requires a prior join).
 
     Guarded by a non-blocking file lock so the periodic background trigger and a manual run
@@ -662,18 +709,20 @@ def cmd_sync(args) -> int:
         ratelimit.record_attempt(state)
         s = session.load()
         if not s:
+            ratelimit.record_failure(state, "not signed in - run: icp login", auth=True)
             ui.err("not signed in - run: icp login")
             return 1
         if not (s.get("octagon") or {}).get("peer_id"):
+            ratelimit.record_failure(state, "not joined to the keychain - run: icp login", auth=True)
             ui.err("not joined to the keychain - run: icp login")
             return 1
         device = Device.load_or_create()
         # The cached cloudKitToken is short-lived; re-mint it from the mmeAuthToken before every
         # sync. If the mmeAuthToken has also expired, _ensure_fresh_tokens silently re-authenticates
         # with the saved password (no manual login), unless 2FA is required or no password is saved.
-        interactive = sys.stdin.isatty() and not background
+        interactive = ui.interactive() and not background
         try:
-            anisette = Anisette(args.anisette)
+            anisette = open_anisette(args.anisette)
             _ensure_fresh_tokens(s, device, anisette, interactive=interactive,
                                  allow_password=not background)
             session.save(s)  # persist any freshly re-minted tokens
@@ -682,10 +731,8 @@ def cmd_sync(args) -> int:
             ui.err(f"iCloud login needed: {e}")
             return 1
         except (icloud.ICloudError, AnisetteError, GSAError) as e:
-            # GSAError here = a password sign-in failed: stop background syncs from retrying it
-            ratelimit.record_failure(state, f"token refresh failed: {e}",
-                                     auth=isinstance(e, GSAError),
-                                     retry_after=getattr(e, "retry_after", None))
+            # a GSAError (not offline) = a password sign-in failed: stop unattended retries
+            ratelimit.record_failure(state, f"token refresh failed: {e}", **_failure_flags(e))
             ui.err(f"could not refresh the iCloud token: {e}")
             return 1
         try:
@@ -694,12 +741,14 @@ def cmd_sync(args) -> int:
             n = client.sync_and_decrypt()
             session.save(s)  # persist the shared-groups container user id
         except (OctagonError, CloudKitError) as e:
-            ratelimit.record_failure(state, f"sync failed: {e}",
-                                     retry_after=getattr(e, "retry_after", None))
+            flags = _failure_flags(e)
+            flags["auth"] = flags["auth"] and not isinstance(e, OctagonError)
+            ratelimit.record_failure(state, f"sync failed: {e}", **flags)
             ui.err(f"sync failed: {e}")
             return 1
         ratelimit.record_success(state)
         ui.out(f"Synced {n} credential(s) into the vault.")
+        _mirror_vault(interactive=interactive, force=False)
         # Best-effort, never interactive, at most once a day: the Hide My Email web session
         # signs in with the password once its trust expires - not something to repeat every
         # few minutes. Its 2FA is handled at login (cmd_login).
@@ -757,8 +806,8 @@ def cmd_diag(args) -> int:
         return 1
     device = Device.load_or_create()
     try:
-        anisette = Anisette(args.anisette)
-        _ensure_fresh_tokens(s, device, anisette, interactive=sys.stdin.isatty())
+        anisette = open_anisette(args.anisette)
+        _ensure_fresh_tokens(s, device, anisette, interactive=ui.interactive())
         session.save(s)
         if what == "sharing":
             diag.sharing_report(s, device, anisette, ui.out)
@@ -830,15 +879,72 @@ def _ensure_web_session(s: dict, *, interactive: bool):
 
 
 def cmd_logout(args) -> int:
+    """Clear everything sign-in created: the session, the saved Apple ID/password and the logins
+    mirrored into the keyring. The vault (autofill data) stays unless --purge-vault."""
+    if args.reset_keys:
+        for line in session.reset_keys():
+            ui.out(line)
     session.clear()
-    ui.out("Session cleared. Device identity kept (use --wipe-device to remove it).")
+    ui.out("Session and saved Apple ID cleared.")
+    if not args.keep_mirror:
+        from .. import mirror
+        n = mirror.remove_all()
+        ui.out(f"Removed {n} mirrored keyring item(s)." if n else "No mirrored keyring items.")
+    from .. import ratelimit
+    state = ratelimit.load()
+    state.update(needs_login=True, failures=0, last_error="not signed in - run: icp login",
+                 hint="Sign in: run `icp login --gui`.")
+    ratelimit.save(state)
+    if args.purge_vault:
+        from ..paths import aliases_file, vault_file
+        for f in (vault_file(), aliases_file()):
+            f.unlink(missing_ok=True)
+        ui.out("Vault and Hide My Email cache deleted.")
+    else:
+        ui.out("Vault kept (autofill still works until you purge it with --purge-vault).")
     if args.wipe_device:
         from ..paths import device_file
-        f = device_file()
-        if f.exists():
-            f.unlink()
+        device_file().unlink(missing_ok=True)
         ui.out("Device identity wiped.")
+    else:
+        ui.out("Device identity kept (use --wipe-device to remove it).")
     return 0
+
+
+def _mirror_vault(*, interactive: bool, force: bool = True):
+    """Best-effort: copy the vault's logins into the Secret Service (never fails a sync)."""
+    from .. import mirror
+    from ..vault.store import load_vault
+    try:
+        res = mirror.sync_to_keyring(load_vault().all(), interactive=interactive, force=force)
+    except Exception as e:
+        ui.warn(f"mirror failed: {e}")
+        return None
+    if not (res.skipped and not interactive):   # quiet in unattended runs when nothing happened
+        ui.out(str(res))
+    return res
+
+
+def cmd_mirror(args) -> int:
+    """Mirror the existing vault into the keyring now, without contacting Apple."""
+    res = _mirror_vault(interactive=True)
+    benign = ("disabled", "unchanged", "vault has no")
+    return 1 if res is None or (res.skipped and not res.skipped.startswith(benign)) else 0
+
+
+def cmd_gui(args) -> int:
+    from ..gui.app import main as gui_main
+    return gui_main()
+
+
+def cmd_doctor(args) -> int:
+    from .. import doctor
+    return doctor.run(args.anisette)
+
+
+def cmd_setup(args) -> int:
+    from .. import setup
+    return setup.run(args)
 
 
 def main(argv=None) -> int:
@@ -857,6 +963,8 @@ def main(argv=None) -> int:
                     help="don't store the password for silent token refresh (re-login manually "
                          "each time the ~7-day token expires)")
     lp.add_argument("--debug", action="store_true", help="write a redacted debug transcript")
+    lp.add_argument("--gui", action="store_true",
+                    help="ask for the password, 2FA code and confirmations in dialogs")
     lp.set_defaults(func=cmd_login)
 
     sp = sub.add_parser(
@@ -893,8 +1001,34 @@ def main(argv=None) -> int:
     dp.add_argument("--bundle", help="bundle id to use for `diag container`")
     dp.set_defaults(func=cmd_diag)
 
-    op = sub.add_parser("logout", help="clear the stored session")
+    sub.add_parser("mirror", help="copy logins into the system keyring (shows in Seahorse)"
+                   ).set_defaults(func=cmd_mirror)
+
+    sub.add_parser("gui", help="open the Passwords window (GTK)").set_defaults(func=cmd_gui)
+
+    sub.add_parser("doctor", help="check that everything needed for autofill is working"
+                   ).set_defaults(func=cmd_doctor)
+
+    up = sub.add_parser("setup", help="register the browser host, anisette check, sync timer")
+    up.add_argument("-y", "--yes", action="store_true", help="don't ask before starting things")
+    up.add_argument("--apple-extension", choices=["useragent", "patched", "off"],
+                    help="make Apple's own iCloud Passwords extension work on Linux: 'useragent' "
+                         "(browser reports Windows; the store extension stays unmodified), "
+                         "'patched' (local patched copy) or 'off' (undo the launcher change)")
+    up.add_argument("--no-timer", action="store_true", help="don't install the systemd timer")
+    up.add_argument("--extension-id", action="append",
+                    help="also allow this extension id (e.g. an unpacked build with another id)")
+    up.set_defaults(func=cmd_setup)
+
+    op = sub.add_parser("logout", help="clear the session, saved Apple ID and keyring mirror")
     op.add_argument("--wipe-device", action="store_true", help="also remove the device identity")
+    op.add_argument("--keep-mirror", action="store_true",
+                    help="leave the mirrored logins in the keyring")
+    op.add_argument("--purge-vault", action="store_true",
+                    help="also delete the local vault and Hide My Email cache")
+    op.add_argument("--reset-keys", action="store_true",
+                    help="start over after a lost keyring entry: set encrypted files aside "
+                         "(renamed .lost-<time>) and forget the master key")
     op.set_defaults(func=cmd_logout)
 
     args = p.parse_args(argv)
