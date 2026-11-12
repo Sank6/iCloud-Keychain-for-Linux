@@ -23,6 +23,10 @@ import sys
 
 from .. import totp as totp_codes
 
+# A native-messaging request is a small JSON object. The length prefix is 32 bit, so
+# cap it: the peer is the browser, but a bad length should not ask for a huge read.
+MAX_MESSAGE_BYTES = 8 * 1024 * 1024
+
 
 @dataclasses.dataclass(frozen=True)
 class Credential:
@@ -85,12 +89,17 @@ def domains_match(page: str, stored: str) -> bool:
     Matches exact host, and either being a sub-domain of the other (so `example.com` fills on
     `login.example.com` and vice-versa). Conservative: requires a dotted-boundary suffix so
     `notexample.com` never matches `example.com`.
+
+    The suffix comparison needs the shorter side to contain a dot: a stored domain of `com`
+    would otherwise match every .com page.
     """
     p, s = _normalize_host(page), _normalize_host(stored)
     if not p or not s:
         return False
     if p == s:
         return True
+    if "." not in p or "." not in s:
+        return False
     return p.endswith("." + s) or s.endswith("." + p)
 
 
@@ -125,15 +134,21 @@ def _name_matches_host(page: str, name: str) -> bool:
     The iOS Passwords app can show a useful account name (for example "Cloudflare") even when
     the decrypted item has no `srvr` host. Match only whole hostname labels so this stays much
     narrower than substring matching.
+
+    Only the label left of the top-level domain may match, so a site like
+    `cloudflare.attacker.net` cannot claim a "Cloudflare" entry - the name has to belong to
+    the registrable domain, not to some label of it.
     """
-    labels = {label for label in _normalize_host(page).split(".") if label}
-    if not labels:
+    host = _normalize_host(page)
+    labels = [label for label in host.split(".") if label]
+    if len(labels) < 2:
         return False
+    candidates = {labels[-2]}
     tokens = {
         token for token in re.findall(r"[a-z0-9]+", name.lower())
         if len(token) >= 4 and token not in _GENERIC_NAME_TOKENS
     }
-    return bool(labels & tokens)
+    return bool(candidates & tokens)
 
 # `agrp` is the access group of the subsystem that wrote an item, and identifies its record type.
 _AGRP_LOGIN = {"com.apple.cfnetwork", "apple"}
@@ -345,6 +360,8 @@ def read_message(stream=None) -> dict | None:
     if len(raw_len) < 4:
         return None
     (length,) = struct.unpack("<I", raw_len)
+    if length > MAX_MESSAGE_BYTES:
+        return None
     data = stream.read(length)
     if len(data) < length:
         return None

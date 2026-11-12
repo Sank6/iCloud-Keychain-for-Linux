@@ -41,6 +41,16 @@ class Anisette:
         self.timeout = timeout
         self._client_info: dict[str, str] | None = None
 
+    def _url(self, path: str) -> str:
+        """Build an endpoint URL, keeping the query string of the configured URL.
+
+        Servers can be told which backend to use through a query parameter
+        (for example ``?backend=macos``), so it has to survive the path.
+        """
+        base, _, query = self.url.partition("?")
+        url = f"{base.rstrip('/')}{path}" if path else base
+        return f"{url}?{query}" if query else url
+
     @property
     def client_info(self) -> str:
         return self._identity()["client_info"]
@@ -59,7 +69,7 @@ class Anisette:
     def _identity(self) -> dict[str, str]:
         if self._client_info is not None:
             return self._client_info
-        url = f"{self.url}/v3/client_info"
+        url = self._url("/v3/client_info")
         try:
             response = requests.get(url, timeout=self.timeout)
             response.raise_for_status()
@@ -78,8 +88,9 @@ class Anisette:
         return self._client_info
 
     def headers(self) -> dict:
+        url = self._url("")
         try:
-            response = requests.get(self.url, timeout=self.timeout)
+            response = requests.get(url, timeout=self.timeout)
             response.raise_for_status()
             data = response.json()
         except (requests.RequestException, ValueError) as e:

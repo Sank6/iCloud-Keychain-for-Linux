@@ -237,6 +237,9 @@
     row.addEventListener("mouseleave", () => (row.style.background = "#fff"));
     row.addEventListener("mousedown", (e) => {
       e.preventDefault();
+      // Only a real click fills the credential: a page script can dispatch a synthetic
+      // mousedown, and that must not be able to make us hand a password to the page.
+      if (!e.isTrusted) return;
       onPick();
       removeMenu();
     });

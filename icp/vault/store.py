@@ -31,9 +31,14 @@ def load_vault() -> CredentialStore:
     try:
         data = json.loads(box.decrypt(f.read_bytes()).decode())
     except nacl.exceptions.CryptoError:
-        logging.getLogger(__name__).warning("cannot decrypt %s with the current master key; "
-                                            "discarding it - run `icp sync` to rebuild", f)
-        f.unlink()
+        # Do NOT delete the vault here. A master key that does not match it
+        # almost always means the keyring was unreachable (the native host is
+        # spawned by the browser, without the session bus), not that the vault
+        # is worthless - and deleting it would throw away the credentials.
+        # `icp sync` rebuilds it from the keychain.
+        logging.getLogger(__name__).error(
+            "cannot decrypt %s with the current master key - the keyring was probably "
+            "unreachable. The vault is left alone; run `icp sync` to rebuild it.", f)
         return CredentialStore([])
     creds = [Credential(domain=c.get("domain", ""), username=c.get("username", ""),
                         password=c.get("password", ""), title=c.get("title", ""),

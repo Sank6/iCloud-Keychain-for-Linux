@@ -31,8 +31,12 @@ def load_aliases() -> list[HmeAlias]:
     try:
         data = json.loads(box.decrypt(f.read_bytes()).decode())
     except nacl.exceptions.CryptoError:
-        logging.getLogger(__name__).warning("cannot decrypt %s with the current master key; "
-                                            "discarding it - it will be refetched", f)
-        f.unlink()
+        # Do NOT delete the file here - see the same note in icp/vault/store.py: a
+        # master key that does not match usually means the keyring was
+        # unreachable, not that the data is worthless.
+        logging.getLogger(__name__).error(
+            "cannot decrypt %s with the current master key - the keyring was probably "
+            "unreachable. The aliases are left alone; they are refetched on the next "
+            "sign-in.", f)
         return []
     return [HmeAlias(**a) for a in data.get("aliases", [])]
