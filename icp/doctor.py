@@ -64,9 +64,23 @@ def listening_exposed(port: int, proc_dir: str = "/proc/net") -> list[str]:
     return sorted(set(out))
 
 
+def _check_anisette_v3(url: str):
+    import requests
+    try:
+        requests.get(f"{url}/v3/client_info", timeout=5).raise_for_status()
+    except Exception as e:
+        return FAIL, f"anisette v3 server not reachable at {url} ({type(e).__name__})", \
+            "use another v3 server, or a local one (packaging/anisette/README.md)"
+    return OK, (f"anisette v3 server reachable at {url}; the device identity is generated and "
+                "kept on this machine"), ""
+
+
 def check_anisette(url: str | None):
     import requests
     url = config.anisette_url(url)
+    if not config.is_loopback(url) and config.get("anisette_protocol", env="ICP_ANISETTE_PROTOCOL",
+                                                   default="auto") != "v1":
+        return _check_anisette_v3(url)
     port = urlparse(url).port or ANISETTE_PORT
     runner = shutil.which("docker") or shutil.which("podman")
     hint = (" ".join(anisette_run_command(os.path.basename(runner))) if runner

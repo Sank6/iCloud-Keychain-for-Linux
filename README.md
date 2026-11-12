@@ -25,6 +25,15 @@ have to do this once; unit files for starting it at login are in `packaging/anis
 another address, set `ICP_ANISETTE_URL`, pass `--anisette URL`, or put `anisette_url = "..."` in
 `~/.config/icp/config.toml`; the default is `http://127.0.0.1:6969`.)
 
+**Apple now rejects the Docker server above** (it generates data with Apple's Android libraries;
+Apple refuses those with `-80045` since October 2026). Use a *remote anisette v3 server* backed by
+a real Mac instead: `ICP_ANISETTE_URL=https://<server> icp login`. With a remote server `icp` speaks
+the v3 protocol: it generates its own random device identity, registers it with Apple from this
+machine, and stores it in `~/.config/icp/anisette-v3.json` (mode 0600). The server only runs
+Apple's ADI code for you; nobody shares your identity. Force a protocol with
+`anisette_protocol = "v1"|"v3"` (or `ICP_ANISETTE_PROTOCOL`); the default is v1 for a loopback
+server and v3 for anything else.
+
 You will also need this repo. Clone it / download it as you wish.
 
 ## Install

@@ -18,7 +18,8 @@ import subprocess
 from . import ui
 from .. import diag
 from ..auth import grandslam as auth, icloud, session
-from ..auth.anisette import Anisette, AnisetteError
+from ..auth.anisette import AnisetteError
+from ..auth.anisette_v3 import open_anisette
 from ..auth.device import Device
 from ..auth.gsa import GSAClient, GSAError
 from ..auth.session import SessionError
@@ -199,7 +200,7 @@ def cmd_login(args) -> int:
     log = logging.getLogger("icp.login")
 
     device = Device.load_or_create()
-    anisette = Anisette(args.anisette)
+    anisette = open_anisette(args.anisette)
     try:
         anisette.headers()  # fail fast if the anisette server is down
     except AnisetteError as e:
@@ -696,7 +697,7 @@ def _sync(args) -> int:
             ui.err("not joined to the keychain - run: icp login")
             return 1
         device = Device.load_or_create()
-        anisette = Anisette(args.anisette)
+        anisette = open_anisette(args.anisette)
         # The cached cloudKitToken is short-lived; re-mint it from the mmeAuthToken before every
         # sync. If the mmeAuthToken has also expired, _ensure_fresh_tokens silently re-authenticates
         # with the saved password (no manual login), unless 2FA is required or no password is saved.
@@ -784,7 +785,7 @@ def cmd_diag(args) -> int:
         ui.err("not signed in - run: icp login")
         return 1
     device = Device.load_or_create()
-    anisette = Anisette(args.anisette)
+    anisette = open_anisette(args.anisette)
     try:
         _ensure_fresh_tokens(s, device, anisette, interactive=ui.interactive())
         session.save(s)
