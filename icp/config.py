@@ -4,6 +4,7 @@ Recognised keys (all optional):
   anisette_url         where the anisette server listens (env ICP_ANISETTE_URL, CLI --anisette)
   client_info          X-MMe-Client-Info to claim at sign-in (env ICP_CLIENT_INFO); default: Android for a
                        loopback anisette server, otherwise whatever the server reports
+  twofa_method         "trusted" (default: code shown on your Apple devices) or "sms" (ICP_2FA_METHOD)
   mirror_collection    Secret Service collection (label) for the logins mirror (ICP_MIRROR_COLLECTION)
 
 Precedence for every value: explicit argument > environment > config file > built-in default."""
@@ -51,6 +52,11 @@ def anisette_url(explicit: str | None = None) -> str:
 
 def client_info() -> str | None:
     return get("client_info", env="ICP_CLIENT_INFO")
+
+
+def twofa_method() -> str:
+    """"trusted" (code shown on your Apple devices, default) or "sms"."""
+    return "sms" if (get("twofa_method", env="ICP_2FA_METHOD") or "").lower() == "sms" else "trusted"
 
 
 def is_loopback(url: str) -> bool:

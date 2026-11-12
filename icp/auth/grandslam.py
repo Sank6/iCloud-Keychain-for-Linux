@@ -2,6 +2,7 @@
 
 from typing import Callable
 
+from .. import config
 from .gsa import GSAClient, GSAError
 
 # Called with the factor kind ("trusted" | "sms"); must return the 6-digit code.
@@ -45,7 +46,10 @@ def authenticate(gsa: GSAClient, username: str, password: str,
         raise TwoFactorUnavailable("Apple wants a 2FA code - run `icp login` interactively")
 
     dsid, idms = spd["adsid"], spd["GsIdmsToken"]
-    if au == "secondaryAuth":
+    # `secondaryAuth` means Apple will accept either factor. The code shown on a trusted device is
+    # the default; SMS only when asked for (twofa_method = "sms" / ICP_2FA_METHOD=sms).
+    sms = au == "secondaryAuth" and config.twofa_method() == "sms"
+    if sms:
         gsa.trigger_sms_factor(dsid, idms)
         _submit(lambda c: gsa.submit_sms_factor(c, dsid, idms), twofa, "sms", notify)
     else:
