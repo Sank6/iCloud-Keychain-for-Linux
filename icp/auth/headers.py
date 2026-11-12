@@ -13,3 +13,7 @@ def identity_headers(device: Device, anisette: Anisette) -> dict:
     headers = dict(device.meta_headers())
     headers.update(anisette.headers())
     return headers
+
+
+def service_client_info(anisette: Anisette, service_identity: str) -> str:
+    return f"{anisette.platform} <{service_identity}>"

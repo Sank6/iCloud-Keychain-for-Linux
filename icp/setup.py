@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import hosts
 from .cli import ui
-from .doctor import OK, anisette_run_command, check_anisette
+from .doctor import OK, check_anisette
 
 UNIT_DIR = hosts.CFG / "systemd/user"
 
@@ -63,16 +63,7 @@ def run(args) -> int:
     ui.step("2/3 Anisette server")
     sev, msg, hint = check_anisette(args.anisette)
     ui.out(f"  {msg}")
-    runner = shutil.which("docker") or shutil.which("podman")
-    if sev == "fail" and "not reachable" in msg and runner:
-        cmd = anisette_run_command(Path(runner).name)
-        if args.yes or ui.confirm_yn(f"  Start it now with `{' '.join(cmd)}`? [y/N] "):
-            r = subprocess.run(cmd)
-            ui.out("  started (loopback only)" if r.returncode == 0
-                   else "  failed - run the command yourself")
-        else:
-            ui.out(f"  Skipped. To start it: {' '.join(cmd)}")
-    elif sev != OK and hint:
+    if sev != OK and hint:
         ui.out(f"  -> {hint}")
 
     ui.step("3/3 Background sync")

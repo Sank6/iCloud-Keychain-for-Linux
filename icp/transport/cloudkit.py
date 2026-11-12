@@ -11,7 +11,8 @@ import hashlib
 import os
 import uuid as _uuid
 
-from .. import const, net
+from .. import net
+from ..auth.headers import service_client_info
 from ..proto import codec as _proto
 from ..proto.codec import Writer, decode_fields, first, first_str
 from ..proto.cuttlefish import encode_function_invoke_request
@@ -25,8 +26,7 @@ CKCODE_INVOKE_URL = "https://gateway.icloud.com/ckcoderouter/api/client/code/inv
 CKDATABASE_SYNC_URL = "https://gateway.icloud.com/ckdatabase/api/client/record/sync"
 CKDATABASE_ZONE_SYNC_URL = "https://gateway.icloud.com/ckdatabase/api/client/zone/sync"
 CK_APP_INIT_URL = "https://gateway.icloud.com/setup/setup/ck/v1/ckAppInit"
-CK_MME_CLIENT_INFO = ("<PC> <Windows;6.2(0,0);9200> "
-                      "<com.apple.cloudkit.CloudKitDaemon/1970 (com.apple.cloudd/1970)>")
+CK_SERVICE_IDENTITY = "com.apple.cloudkit.CloudKitDaemon/1970 (com.apple.cloudd/1970)"
 CUTTLEFISH_CONTAINER = "com.apple.security.keychain"
 CUTTLEFISH_BUNDLE = "com.apple.security.cuttlefish"   # CKCode (Cuttlefish) requests
 SECURITYD_BUNDLE = "com.apple.securityd"              # CKKS record fetches
@@ -128,8 +128,8 @@ def _operation_id() -> str:
     return os.urandom(8).hex().upper()
 
 
-def _container_headers(*, bundle: str, container: str, database_scope: str = "Private",
-                       mme_client_info: str = CK_MME_CLIENT_INFO) -> dict:
+def _container_headers(*, bundle: str, container: str, mme_client_info: str,
+                       database_scope: str = "Private") -> dict:
     """Shared header block for ckAppInit and every CKCode/record op. Caller adds
     auth / userid / authtoken / routing-hint / anisette on top."""
     return {
@@ -159,13 +159,14 @@ def ck_app_init(container: str, bundle: str, dsid: str, mme_token: str, anisette
                 *, timeout: int = 30) -> str:
     """ckAppInit handshake -> the per-container `cloudKitUserId` CloudKit wants in
     `x-cloudkit-userid` (it is NOT the dsid). Authed with Basic(dsid, mmeAuthToken)."""
-    anisette_headers = anisette.headers()      # first: it also learns the client identity
     headers = _container_headers(
-        bundle=bundle, container=container,
-        mme_client_info=const.with_device(CK_MME_CLIENT_INFO, getattr(anisette, "client_info", None)))
+        bundle=bundle,
+        container=container,
+        mme_client_info=service_client_info(anisette, CK_SERVICE_IDENTITY),
+    )
     headers["Authorization"] = "Basic " + base64.b64encode(
         f"{dsid}:{mme_token}".encode()).decode()
-    headers.update(anisette_headers)
+    headers.update(anisette.headers())
     resp = _post("ckAppInit", CK_APP_INIT_URL, params={"container": container}, headers=headers,
                  data="", verify=VERIFY_TLS, timeout=(5, timeout))
     if resp.status_code == 401:
@@ -237,30 +238,26 @@ class CloudKitTransport:
     (Cuttlefish) and record fetches. Every invoke/fetch_records call makes a LIVE HTTPS request."""
 
     def __init__(self, ck_token: str, user_id: str, device: DeviceConfig, anisette,
-                 *, mme_client_info: str | None = None,
-                 container: str = CUTTLEFISH_CONTAINER, timeout: int = 30):
+                 *, container: str = CUTTLEFISH_CONTAINER, timeout: int = 30):
         self.ck_token = ck_token
         self.user_id = user_id
         self.device = device
         self.anisette = anisette
         self.container = container
-        self.mme_client_info = mme_client_info
         self.timeout = timeout
 
     def _headers(self, bundle: str, routing_hint: str | None = None,
                  database_scope: str = "Private") -> dict:
         """Shared container headers plus the two CKCode-invoke headers: x-cloudkit-userid
         (cloudKitUserId) and x-cloudkit-authtoken (cloudKitToken - never in the protobuf body)."""
-        anisette_headers = self.anisette.headers()   # first: it also learns the client identity
         h = _container_headers(
             bundle=bundle, container=self.container, database_scope=database_scope,
-            mme_client_info=self.mme_client_info or const.with_device(
-                CK_MME_CLIENT_INFO, getattr(self.anisette, "client_info", None)))
+            mme_client_info=service_client_info(self.anisette, CK_SERVICE_IDENTITY))
         h["x-cloudkit-userid"] = self.user_id
         h["x-cloudkit-authtoken"] = self.ck_token
         if routing_hint:
             h["x-cloudkit-functionroutinghint"] = routing_hint
-        h.update(anisette_headers)
+        h.update(self.anisette.headers())
         return h
 
     def _perform(self, url: str, op_type: int, request_field: int, request_bytes: bytes,

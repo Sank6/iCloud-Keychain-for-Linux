@@ -52,10 +52,10 @@ def test_config_override_wins(monkeypatch):
     assert a.client_info == "<X> <Y> <Z>"
 
 
-def test_service_identities_claim_the_anisettes_device():
-    mac = const.MAC_CLIENT_INFO
-    assert const.with_device("<PC> <Windows;6.2(0,0);9200> <com.apple.AOSKit/282 (com.apple.accountsd/113)>", mac) \
-        == "<Mac15,7> <macOS;14.5;23F79> <com.apple.AOSKit/282 (com.apple.accountsd/113)>"
-    # nothing known about the anisette's device: leave the service's identity alone
-    plain = "<PC> <Windows;6.2(0,0);9200> <x/1 (y/2)>"
-    assert const.with_device(plain, None) == plain
+def test_service_identities_are_appended_to_the_claimed_platform(monkeypatch):
+    from icp.auth.headers import service_client_info
+    monkeypatch.delenv("ICP_CLIENT_INFO", raising=False)
+    _serve(monkeypatch)
+    a = Anisette("http://127.0.0.1:6969")
+    assert service_client_info(a, "com.apple.AOSKit/282 (com.apple.accountsd/113)") == \
+        "<Pixel 7> <Android;14;UQ1A.240205.002> <com.apple.AOSKit/282 (com.apple.accountsd/113)>"

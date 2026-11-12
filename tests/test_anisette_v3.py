@@ -88,7 +88,6 @@ def test_provisioning_runs_the_whole_handshake_from_this_machine(env, monkeypatc
     calls, _ = env
     ws = FakeWS(script())
     a = v3.AnisetteV3(SERVER)
-    a.client_info, a.user_agent = CLIENT, UA
     a.provision(connect=lambda *args, **kw: ws)
 
     assert ws.sent == [{"identifier": base64.b64encode(a.state.identifier).decode()},
@@ -98,7 +97,7 @@ def test_provisioning_runs_the_whole_handshake_from_this_machine(env, monkeypatc
     method, url, kw = calls["apple"][1]
     assert (method, url) == ("post", "https://gsd.apple.com/start")
     h = kw["headers"]
-    assert h["X-Mme-Client-Info"] == CLIENT and h["User-Agent"] == UA
+    assert h["X-Mme-Client-Info"] == const.MAC_CLIENT_INFO and h["User-Agent"] == UA
     assert h["Content-Type"] == "text/xml"
     assert h["X-Mme-Device-Id"] == a.state.device_id
     assert plistlib.loads(calls["apple"][2][2]["data"])["Request"] == {"cpim": "CPIM"}
@@ -160,7 +159,6 @@ def test_server_failure_is_reported(env, monkeypatch):
 
 def test_provisioning_error_from_server_is_reported(env):
     a = v3.AnisetteV3(SERVER)
-    a.client_info, a.user_agent = CLIENT, UA
     ws = FakeWS([{"result": "GiveIdentifier"}, {"result": "Error", "message": "ADI refused"}])
     with pytest.raises(AnisetteError, match="ADI refused"):
         a.provision(connect=lambda *args, **kw: ws)
@@ -193,7 +191,6 @@ def test_provisioning_over_a_real_websocket(env):
         import threading
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         a = v3.AnisetteV3(f"http://127.0.0.1:{port}")
-        a.client_info, a.user_agent = CLIENT, UA
         a.provision()
         srv.shutdown()
     assert a.state.adi_pb == b"REAL"

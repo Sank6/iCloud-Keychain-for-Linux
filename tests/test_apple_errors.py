@@ -27,8 +27,8 @@ class Dev:
 
 
 class Anis:
-    client_info = None
-    user_agent = None
+    client_info = "<TestDevice> <testOS;1.0> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+    user_agent = "test-authkit/1.0"
 
     def headers(self): return {"X-Apple-I-MD": "a", "X-Apple-I-MD-M": "b"}
 
@@ -46,9 +46,9 @@ class Env(unittest.TestCase):
 
 class GsaErrorTests(Env):
     def test_first_request_403_non_plist_is_actionable(self):
-        with mock.patch.object(requests, "post", return_value=Resp(b"x" * 146, 403)):
+        with mock.patch.object(requests.Session, "post", return_value=Resp(b"x" * 146, 403)):
             with self.assertRaises(GSAError) as cm:
-                GSAClient(Dev(), Anis())._request({"o": "init"})
+                GSAClient(Dev(), Anis())._request({"o": "init"}, anisette_headers={})
         e = cm.exception
         self.assertEqual(e.kind, "blocked")
         msg = str(e)
@@ -58,15 +58,15 @@ class GsaErrorTests(Env):
         self.assertNotIn("non-plist", msg)
 
     def test_other_non_plist_keeps_old_text(self):
-        with mock.patch.object(requests, "post", return_value=Resp(b"<html>", 404)):
+        with mock.patch.object(requests.Session, "post", return_value=Resp(b"<html>", 404)):
             with self.assertRaises(GSAError) as cm:
-                GSAClient(Dev(), Anis())._request({"o": "init"})
-        self.assertIn("non-plist reply (6 bytes)", str(cm.exception))
+                GSAClient(Dev(), Anis())._request({"o": "init"}, anisette_headers={})
+        self.assertIn("non-plist reply (6 bytes", str(cm.exception))
 
     def test_offline_is_network_kind_not_auth(self):
-        with mock.patch.object(requests, "post", side_effect=requests.ConnectionError("x")):
+        with mock.patch.object(requests.Session, "post", side_effect=requests.ConnectionError("x")):
             with self.assertRaises(GSAError) as cm:
-                GSAClient(Dev(), Anis())._request({"o": "init"})
+                GSAClient(Dev(), Anis())._request({"o": "init"}, anisette_headers={})
         self.assertEqual(cm.exception.kind, "network")
         flags = app._failure_flags(cm.exception)
         self.assertTrue(flags["transient"])

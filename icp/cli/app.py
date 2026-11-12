@@ -41,6 +41,12 @@ def _twofa_prompt(kind: str) -> str:
     return ui.ask("6-digit code: ")
 
 
+def _hme_twofa_prompt() -> str:
+    ui.step("Hide My Email requires a separate Apple web-session verification.")
+    ui.step("A 2FA code was sent to your trusted Apple devices for Hide My Email.")
+    return ui.ask("6-digit Hide My Email code: ")
+
+
 def _mint_pet(device, anisette, username: str, password: str) -> str:
     """Mint a fresh GSA PET (password-equivalent token) for escrowproxy Basic auth. Silent on an
     already-trusted device (no 2FA re-prompt). Kept fresh per phase because the PET is short-lived."""
@@ -89,6 +95,17 @@ def _refresh_webservices(s: dict, device, anisette, log=None, debug=False) -> in
         raise icloud.ICloudAuthExpired(
             f"iCloud credentials expired ({data.get('description') or 'unauthorized'}) - "
             "run `icp login` to re-authenticate")
+    error_id = data.get("ErrorID")
+    if error_id == "MOBILEME_TERMS_OF_SERVICE_UPDATE":
+        raise icloud.ICloudError(
+            "Apple requires you to accept the updated iCloud Terms of Service. "
+            "Accept them on an Apple device or iCloud.com, then run `icp login` again."
+        )
+    if error_id:
+        raise icloud.ICloudError(
+            f"iCloud account settings failed: {error_id}: "
+            f"{data.get('description') or data.get('localizedError') or 'unknown error'}"
+        )
     if data.get("status") not in (0, None):
         raise icloud.ICloudError(f"iCloud rejected the token: {data.get('status-message')}")
     ws = icloud.extract_webservices(data)
@@ -200,9 +217,10 @@ def cmd_login(args) -> int:
     log = logging.getLogger("icp.login")
 
     device = Device.load_or_create()
-    anisette = open_anisette(args.anisette)
     try:
-        anisette.headers()  # fail fast if the anisette server is down
+        anisette = open_anisette(args.anisette)
+        _ = anisette.client_info
+        anisette.headers()
     except AnisetteError as e:
         ui.err(str(e))
         return 2
@@ -248,13 +266,15 @@ def cmd_login(args) -> int:
             ui.warn(f"could not fetch iCloud service URLs: {e}")
 
     session.save(record)
-    ui.out(f"Signed in as {username}.")
 
     if not (mme_ok and n_ws):
-        ui.err("sign-in succeeded but iCloud service URLs are unavailable - cannot join the keychain")
+        ui.err("Apple ID and 2FA were accepted, but iCloud service tokens are unavailable - "
+               "cannot join the keychain")
         if debug_path:
             ui.out(f"Debug transcript (redacted): {debug_path}")
         return 1
+
+    ui.out(f"Signed in as {username}.")
 
     rc = _join_and_sync(record, device, anisette, username, password)
     if rc == 0:
@@ -697,12 +717,12 @@ def _sync(args) -> int:
             ui.err("not joined to the keychain - run: icp login")
             return 1
         device = Device.load_or_create()
-        anisette = open_anisette(args.anisette)
         # The cached cloudKitToken is short-lived; re-mint it from the mmeAuthToken before every
         # sync. If the mmeAuthToken has also expired, _ensure_fresh_tokens silently re-authenticates
         # with the saved password (no manual login), unless 2FA is required or no password is saved.
         interactive = ui.interactive() and not background
         try:
+            anisette = open_anisette(args.anisette)
             _ensure_fresh_tokens(s, device, anisette, interactive=interactive,
                                  allow_password=not background)
             session.save(s)  # persist any freshly re-minted tokens
@@ -785,8 +805,8 @@ def cmd_diag(args) -> int:
         ui.err("not signed in - run: icp login")
         return 1
     device = Device.load_or_create()
-    anisette = open_anisette(args.anisette)
     try:
+        anisette = open_anisette(args.anisette)
         _ensure_fresh_tokens(s, device, anisette, interactive=ui.interactive())
         session.save(s)
         if what == "sharing":
@@ -849,7 +869,7 @@ def _ensure_web_session(s: dict, *, interactive: bool):
                     "Apple asked for a 2FA code for the web session - run `icp show` "
                     "from a terminal once to establish trust")
             sess.request_push_notification()  # the 409 no longer auto-sends this on its own
-            sess.submit_2fa(_twofa_prompt("trusted"))
+            sess.submit_2fa(_hme_twofa_prompt())
         account_data = sess.account_login()
         if webauth.hsa_challenge_required(account_data):
             raise webauth.WebAuthError("2FA did not clear the web-session challenge")
@@ -933,7 +953,7 @@ def main(argv=None) -> int:
         prog="icp",
         description="iCloud Passwords for Linux - read-only iCloud Keychain autofill")
     p.add_argument("--anisette",
-                   help="anisette server URL (default: $ICP_ANISETTE_URL or localhost:6969)")
+                   help="anisette server URL (required unless $ICP_ANISETTE_URL is set)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     lp = sub.add_parser(

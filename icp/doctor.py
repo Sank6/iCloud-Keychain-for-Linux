@@ -78,13 +78,15 @@ def _check_anisette_v3(url: str):
 def check_anisette(url: str | None):
     import requests
     url = config.anisette_url(url)
+    if not url:
+        return FAIL, "no anisette server configured", \
+            "set anisette_url in ~/.config/icp/config.toml (see the README for servers Apple accepts)"
     if not config.is_loopback(url) and config.get("anisette_protocol", env="ICP_ANISETTE_PROTOCOL",
                                                    default="auto") != "v1":
         return _check_anisette_v3(url)
     port = urlparse(url).port or ANISETTE_PORT
-    runner = shutil.which("docker") or shutil.which("podman")
-    hint = (" ".join(anisette_run_command(os.path.basename(runner))) if runner
-            else "install Docker or Podman (see packaging/anisette/README.md)")
+    hint = ("start your local anisette server; note Apple rejects the dadoum Docker image "
+            "(Android libraries), see the README")
     try:
         r = requests.get(url, timeout=3)
     except Exception as e:
@@ -98,9 +100,7 @@ def check_anisette(url: str | None):
     if exposed:
         return WARN, (f"anisette server on port {port} is listening on {', '.join(exposed)} "
                       "- reachable from your network"), \
-            ("re-create it bound to loopback: "
-             f"{os.path.basename(runner) if runner else 'docker'} rm -f <name>; then "
-             f"{hint if runner else 'see packaging/anisette/'}")
+            "bind it to 127.0.0.1 only: it is unauthenticated (docker: -p 127.0.0.1:PORT:PORT)"
     return OK, f"anisette server reachable at {url} (loopback only)", ""
 
 

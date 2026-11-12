@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 import requests
 
 from .. import config, const, net, paths
+from . import apple_tls
 from ..errors import AppleError
 from .anisette import Anisette, AnisetteError
 
@@ -95,15 +96,24 @@ class AnisetteV3(Anisette):
         super().__init__(url)
         self.state = _State.load(self.url)
 
-    # ---- server metadata ---------------------------------------------------------------------
-    def _server_identity(self) -> tuple[str, str]:
-        try:
-            r = requests.get(self.url + "/v3/client_info", timeout=TIMEOUT)
-            r.raise_for_status()
-            info = r.json()
-            return info["client_info"], info["user_agent"]
-        except (requests.RequestException, ValueError, KeyError) as e:
-            raise AnisetteError(f"{self.url} is not an anisette v3 server ({e})") from e
+    # ---- identity ----------------------------------------------------------------------------
+    @property
+    def client_info(self) -> str:
+        """Real-Mac v3 servers report a 2016 MacBook on macOS 10.12.6, which Apple refuses for
+        Advanced Data Protection accounts; claim a recent Mac instead (const.MAC_CLIENT_INFO)."""
+        return config.client_info() or const.MAC_CLIENT_INFO
+
+    def _identity(self) -> dict[str, str]:
+        if self._reported is None:
+            try:
+                r = requests.get(self.url + "/v3/client_info", timeout=TIMEOUT)
+                r.raise_for_status()
+                info = r.json()
+                self._reported = {"client_info": info["client_info"],
+                                  "user_agent": info["user_agent"]}
+            except (requests.RequestException, ValueError, KeyError) as e:
+                raise AnisetteError(f"{self.url} is not an anisette v3 server ({e})") from e
+        return self._reported
 
     # ---- provisioning ------------------------------------------------------------------------
     def _apple_headers(self) -> dict:
@@ -117,7 +127,8 @@ class AnisetteV3(Anisette):
 
     def _apple(self, what: str, method: str, url: str, body: dict | None = None) -> dict:
         kw = {"data": plistlib.dumps(body)} if body is not None else {}
-        resp = net.request(method, url, headers=self._apple_headers(), verify=False, **kw)
+        resp = net.request(method, url, headers=self._apple_headers(),
+                           session=apple_tls.session(), **kw)
         if (ne := net.auth_error(resp, what)):
             raise AnisetteError(str(ne))
         if not resp.ok:
@@ -159,8 +170,7 @@ class AnisetteV3(Anisette):
 
     # ---- headers -----------------------------------------------------------------------------
     def headers(self) -> dict:
-        _, self.user_agent = self._server_identity()
-        self.client_info = config.client_info() or const.MAC_CLIENT_INFO
+        self._identity()                       # fail early if this is not a v3 server
         if self.state.claim != self.client_info:
             self.state.adi_pb = None          # registered under another identity: redo it
         for attempt in (0, 1):
@@ -198,5 +208,8 @@ def open_anisette(url: str | None = None, protocol: str | None = None) -> Aniset
     proto = config.get("anisette_protocol", env="ICP_ANISETTE_PROTOCOL", explicit=protocol,
                        default="auto")
     if proto == "auto":
-        proto = "v1" if config.is_loopback(config.anisette_url(url)) else "v3"
+        configured = config.anisette_url(url)
+        if not configured:
+            return Anisette(url)               # raises the "no server configured" error
+        proto = "v1" if config.is_loopback(configured) else "v3"
     return AnisetteV3(url) if proto == "v3" else Anisette(url)

@@ -80,17 +80,23 @@ class RequestBuildTests(unittest.TestCase):
 
     def test_headers_carry_auth(self):
         class _Anis:
+            platform = "<TestDevice> <testOS;1.0>"
+
             def headers(self):
                 return {"X-Apple-I-MD-M": "machine"}
 
-        t = ck.CloudKitTransport("CKTOKEN", "USERID", self.dev, _Anis(),
-                                 mme_client_info="info")
+        t = ck.CloudKitTransport("CKTOKEN", "USERID", self.dev, _Anis())
         h = t._headers(ck.CUTTLEFISH_BUNDLE, routing_hint="Cuttlefish/joinWithVoucher")
         self.assertEqual(h["x-cloudkit-authtoken"], "CKTOKEN")
         self.assertEqual(h["x-cloudkit-userid"], "USERID")
         self.assertEqual(h["x-cloudkit-functionroutinghint"], "Cuttlefish/joinWithVoucher")
         self.assertEqual(h["x-cloudkit-bundleid"], ck.CUTTLEFISH_BUNDLE)
         self.assertEqual(h["x-cloudkit-containerid"], ck.CUTTLEFISH_CONTAINER)
+        self.assertEqual(
+            h["x-mme-client-info"],
+            "<TestDevice> <testOS;1.0> "
+            "<com.apple.cloudkit.CloudKitDaemon/1970 (com.apple.cloudd/1970)>",
+        )
         self.assertEqual(h["X-Apple-I-MD-M"], "machine")  # anisette merged in
         # record-fetch uses the securityd bundle + no routing hint
         h2 = t._headers(ck.SECURITYD_BUNDLE)
@@ -108,7 +114,11 @@ class ContainerHeaderTests(unittest.TestCase):
                              'messageType=RequestOperation; delimited=true')
 
     def test_container_headers_match_upstream(self):
-        h = ck._container_headers(bundle=ck.CUTTLEFISH_BUNDLE, container=ck.CUTTLEFISH_CONTAINER)
+        h = ck._container_headers(
+            bundle=ck.CUTTLEFISH_BUNDLE,
+            container=ck.CUTTLEFISH_CONTAINER,
+            mme_client_info="info",
+        )
         # accept is x-protobuf (NOT application/json) - the whole block is reused by ckAppInit
         # even though that response body is JSON.
         self.assertEqual(h["accept"], "application/x-protobuf")
@@ -127,7 +137,11 @@ class ContainerHeaderTests(unittest.TestCase):
 
     def test_operation_id_headers_present_and_hex_upper(self):
         # x-apple-operation-{group-}id = uppercase hex of 8 random bytes: 16 uppercase hex chars.
-        h = ck._container_headers(bundle=ck.CUTTLEFISH_BUNDLE, container=ck.CUTTLEFISH_CONTAINER)
+        h = ck._container_headers(
+            bundle=ck.CUTTLEFISH_BUNDLE,
+            container=ck.CUTTLEFISH_CONTAINER,
+            mme_client_info="info",
+        )
         for key in ("x-apple-operation-group-id", "x-apple-operation-id"):
             val = h[key]
             self.assertEqual(len(val), 16)
@@ -136,7 +150,11 @@ class ContainerHeaderTests(unittest.TestCase):
         self.assertNotEqual(h["x-apple-operation-group-id"], h["x-apple-operation-id"])
 
     def test_request_uuid_is_uppercase(self):
-        h = ck._container_headers(bundle=ck.CUTTLEFISH_BUNDLE, container=ck.CUTTLEFISH_CONTAINER)
+        h = ck._container_headers(
+            bundle=ck.CUTTLEFISH_BUNDLE,
+            container=ck.CUTTLEFISH_CONTAINER,
+            mme_client_info="info",
+        )
         u = h["x-apple-request-uuid"]
         self.assertEqual(u, u.upper())
 
@@ -146,6 +164,8 @@ class ContainerHeaderTests(unittest.TestCase):
         import base64
 
         class _Anis:
+            platform = "<TestDevice> <testOS;1.0>"
+
             def headers(self):
                 return {"X-Apple-I-MD": "md"}
 
@@ -189,6 +209,8 @@ class ContainerHeaderTests(unittest.TestCase):
         # The CKCode header block adds x-cloudkit-userid (cloudKitUserId) + x-cloudkit-authtoken
         # (cloudKitToken) on top of the container block.
         class _Anis:
+            platform = "<TestDevice> <testOS;1.0>"
+
             def headers(self):
                 return {}
 

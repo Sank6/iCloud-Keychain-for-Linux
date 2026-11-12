@@ -6,33 +6,36 @@ private, encrypted store on your machine. A browser extension fills them in for 
 Passwords app on a Mac or iPhone. Your Hide My Email addresses show up too. This project is a 
 reverse engineering attempt and **is not affiliated with Apple in any way**.
 
-> This is **untested** with Advanced Data Protection enabled. Any help with this will be appreciated -
-> let me know if you have any issues with ADP enabled (also lmk if it works). Please don't spam escrow attempts!
+> Advanced Data Protection works (signing in needs the code from one of your trusted devices; an
+> account with ADP refuses SMS codes and clients that claim an old macOS). Please don't spam
+> sign-in or escrow attempts: repeated failures make Apple's blocks last longer.
 
 ## What you'll need
 
-An **anisette server** running on your machine. Apple's sign-in needs a small piece of data that
-only Apple's own software can produce; the anisette server provides it locally. Start one with
-Docker (or Podman) - it keeps running in the background:
+An anisette server (see below for which ones Apple accepts). Tell `icp` where it is:
 
 ```
-docker run -d --restart=always --name icp-anisette -p 127.0.0.1:6969:6969 dadoum/anisette-v3-server:latest
+export ICP_ANISETTE_URL="https://your-anisette-server.example"
 ```
 
-Note `127.0.0.1:` in front of the port: without it Docker listens on every network interface and
-anyone on your LAN can use the (unauthenticated) server. `icp doctor` warns if it does. You only
-have to do this once; unit files for starting it at login are in `packaging/anisette/`. (To use
-another address, set `ICP_ANISETTE_URL`, pass `--anisette URL`, or put `anisette_url = "..."` in
-`~/.config/icp/config.toml`; the default is `http://127.0.0.1:6969`.)
+(or `--anisette URL`, or `anisette_url = "..."` in `~/.config/icp/config.toml`).
 
-**Apple now rejects the Docker server above** (it generates data with Apple's Android libraries;
-Apple refuses those with `-80045` since October 2026). Use a *remote anisette v3 server* backed by
-a real Mac instead: `ICP_ANISETTE_URL=https://<server> icp login`. With a remote server `icp` speaks
-the v3 protocol: it generates its own random device identity, registers it with Apple from this
-machine, and stores it in `~/.config/icp/anisette-v3.json` (mode 0600). The server only runs
-Apple's ADI code for you; nobody shares your identity. Force a protocol with
-`anisette_protocol = "v1"|"v3"` (or `ICP_ANISETTE_PROTOCOL`); the default is v1 for a loopback
-server and v3 for anything else.
+**Which anisette server works.** Since October 2026 Apple refuses anisette generated with Apple's
+*Android* libraries (`-80045`), which is what the popular `dadoum/anisette-v3-server` Docker image
+runs, and it blocks the shared identity of public v1 servers. What works:
+
+- A **remote anisette v3 server backed by a real Mac** (e.g. `https://new.ani.sidestore.io`). With
+  a v3 server `icp` generates its own random device identity, registers it with Apple from this
+  machine, and keeps it in `~/.config/icp/anisette-v3.json` (mode 0600). The server only runs
+  Apple's ADI code for you; nobody shares your identity, and it never sees your Apple ID or
+  password (it does see the anisette requests).
+- A **local** server that runs Apple's Windows/Mac code, such as
+  [Anisette-on-Wine](https://github.com/Sank6/Anisette-on-Wine): nothing leaves your machine.
+
+The server must answer `GET /` with anisette headers (v1) or speak the v3 protocol, and serve
+`/v3/client_info` (`client_info` and `user_agent`). `icp` picks the protocol itself: v1 for a
+loopback server, v3 for any other; force it with `anisette_protocol = "v1"|"v3"` (or
+`ICP_ANISETTE_PROTOCOL`). `icp doctor` checks the server.
 
 You will also need this repo. Clone it / download it as you wish.
 
@@ -169,5 +172,4 @@ The keychain decryption, Octagon trust join, and CloudKit transport follow
 [OpenBubbles/rustpush](https://github.com/OpenBubbles/rustpush), cross-checked against
 [Apple's open-source Security code](https://github.com/apple-oss-distributions/Security). Hide My
 Email is ported from [dedoussis's browser extension](https://github.com/dedoussis/icloud-hide-my-email-browser-extension).
-Machine data is provided by the SideStore ecosystem's `anisette-v3-server`. See `RESEARCH.md` for
-how it all works.
+Machine data is provided by the configured anisette server. See `RESEARCH.md` for protocol details.

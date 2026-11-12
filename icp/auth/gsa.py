@@ -14,11 +14,11 @@ import re
 
 import requests  # noqa: F401 - tests patch gsa.requests.*
 import srp._pysrp as srp
-import urllib3
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from .. import const, net
+from . import apple_tls
 from .anisette import Anisette
 from .device import Device
 from .headers import identity_headers
@@ -27,8 +27,6 @@ from ..errors import AppleError
 # Apple's SRP variant.
 srp.rfc5054_enable()
 srp.no_username_in_x()
-urllib3.disable_warnings()
-
 logger = logging.getLogger(__name__)
 
 
@@ -46,7 +44,12 @@ def _net(operation: str, **kw):
     try:
         return net.request(**kw)
     except net.AppleNetError as e:
-        raise GSAError(f"GSA {operation}: {e}", kind=e.kind, retry_after=e.retry_after) from e
+        cls = GSAServiceError if e.kind in ("server", "network") else GSAError
+        raise cls(f"GSA {operation}: {e}", kind=e.kind, retry_after=e.retry_after) from e
+
+
+class GSAServiceError(GSAError):
+    pass
 
 
 class GSAClient:
@@ -58,7 +61,7 @@ class GSAClient:
         self.last_complete_response: dict | None = None
         self.last_session_key: bytes | None = None
 
-    def _cpd(self) -> dict:
+    def _cpd(self, anisette_headers: dict) -> dict:
         cpd = {
             "bootstrap": True,
             "icscrec": True,
@@ -66,36 +69,48 @@ class GSAClient:
             "prkgen": True,
             "svct": "iCloud",
         }
-        cpd.update(identity_headers(self.device, self.anisette))
+        cpd.update(self.device.meta_headers())
+        cpd.update(anisette_headers)
         return cpd
 
-    def _request(self, parameters: dict) -> dict:
-        body = {"Header": {"Version": "1.0.1"}, "Request": {"cpd": self._cpd()}}
+    def _request(self, parameters: dict, *, anisette_headers: dict) -> dict:
+        anisette_headers = dict(anisette_headers)
+        anisette_headers["X-Mme-Client-Info"] = self.anisette.client_info
+        body = {
+            "Header": {"Version": "1.0.1"},
+            "Request": {"cpd": self._cpd(anisette_headers)},
+        }
         body["Request"].update(parameters)
         operation = parameters.get("o", "request")
         # _cpd() above fetched anisette, so its reported client identity is known by now.
         headers = {
             "Content-Type": const.GSA_CONTENT_TYPE,
             "Accept": "*/*",
-            "User-Agent": self.anisette.user_agent or const.GSA_USER_AGENT,
-            "X-MMe-Client-Info": self.anisette.client_info or const.GSA_CLIENT_INFO,
+            "Connection": "close",
+            "User-Agent": self.anisette.user_agent,
+            "X-MMe-Client-Info": self.anisette.client_info,
         }
         resp = _net(operation, method="post", url=const.GSA_ENDPOINT, headers=headers,
-                    data=plist.dumps(body), verify=False)
+                    data=plist.dumps(body), session=apple_tls.new_session())
 
         try:
             payload = plist.loads(resp.content)
             response = payload["Response"]
+            if not isinstance(response, dict):
+                raise ValueError("no Response dictionary")
         except Exception:
             if ne := net.auth_error(resp, "the sign-in request"):
                 raise GSAError(f"GSA {operation} failed: {ne}", kind=ne.kind) from None
-            raise GSAError(
-                f"GSA {operation} failed: HTTP {resp.status_code}: "
-                f"non-plist reply ({len(resp.content)} bytes)", kind="protocol"
+            cls = GSAServiceError if resp.status_code >= 500 else GSAError
+            raise cls(
+                f"GSA {operation} failed: HTTP {resp.status_code}: non-plist reply "
+                f"({len(resp.content)} bytes, {resp.headers.get('Content-Type', 'unknown type')})",
+                kind="protocol",
             ) from None
 
         if not resp.ok:
-            raise GSAError(
+            error_type = GSAServiceError if resp.status_code >= 500 else GSAError
+            raise error_type(
                 f"GSA {operation} failed: HTTP {resp.status_code}: {_status(response)}"
             )
         return response
@@ -104,7 +119,10 @@ class GSAClient:
         usr = srp.User(username, bytes(), hash_alg=srp.SHA256, ng_type=srp.NG_2048)
         _, A = usr.start_authentication()
 
-        init = self._request({"A2k": A, "ps": ["s2k", "s2k_fo"], "u": username, "o": "init"})
+        init_parameters = {"A2k": A, "ps": ["s2k", "s2k_fo"], "u": username, "o": "init"}
+        # Machine validation must remain stable across both SRP requests.
+        anisette_headers = self.anisette.headers()
+        init = self._request(init_parameters, anisette_headers=anisette_headers)
         self.last_init_response = init
         logger.debug("GSA init response keys: %s", list(init))
         if "sp" not in init:
@@ -118,7 +136,10 @@ class GSAClient:
         if M is None:
             raise GSAError("failed to process SRP challenge (wrong password?)")
 
-        complete = self._request({"c": init["c"], "M1": M, "u": username, "o": "complete"})
+        complete = self._request(
+            {"c": init["c"], "M1": M, "u": username, "o": "complete"},
+            anisette_headers=anisette_headers,
+        )
         self.last_complete_response = complete
         logger.debug("GSA complete response keys: %s", list(complete))
         if "M2" not in complete:
@@ -136,7 +157,7 @@ class GSAClient:
     def trigger_trusted_factor(self, dsid: str, idms_token: str) -> None:
         resp = _net("2FA trigger", method="get",
                     url="https://gsa.apple.com/auth/verify/trusteddevice",
-                    headers=self._twofa_headers(dsid, idms_token), verify=False)
+                    headers=self._twofa_headers(dsid, idms_token), session=apple_tls.session())
         logger.debug("2FA trigger reply: HTTP %s content-type=%s body=%s", resp.status_code,
                      resp.headers.get("Content-Type"), _mask(resp.text))
 
@@ -145,13 +166,13 @@ class GSAClient:
         h["security-code"] = code
         resp = _net("2FA validate", method="get",
                     url="https://gsa.apple.com/grandslam/GsService2/validate",
-                    headers=h, verify=False)
+                    headers=h, session=apple_tls.session())
         _check_code(resp, "trusted-device")
 
     def trigger_sms_factor(self, dsid: str, idms_token: str, phone_id: int = 1) -> None:
         _net("SMS trigger", method="put", url="https://gsa.apple.com/auth/verify/phone/",
              json={"phoneNumber": {"id": phone_id}, "mode": "sms"},
-             headers=self._twofa_headers(dsid, idms_token), verify=False)
+             headers=self._twofa_headers(dsid, idms_token), session=apple_tls.session())
 
     def submit_sms_factor(self, code: str, dsid: str, idms_token: str, phone_id: int = 1) -> None:
         body = {
@@ -161,22 +182,23 @@ class GSAClient:
         }
         resp = _net("SMS validate", method="post",
                     url="https://gsa.apple.com/auth/verify/phone/securitycode",
-                    json=body, headers=self._twofa_headers(dsid, idms_token), verify=False)
+                    json=body, headers=self._twofa_headers(dsid, idms_token),
+                    session=apple_tls.session())
         _check_code(resp, "SMS")
 
     def _twofa_headers(self, dsid: str, idms_token: str) -> dict:
         identity_token = base64.b64encode(f"{dsid}:{idms_token}".encode()).decode()
         h = {
             "Content-Type": const.GSA_CONTENT_TYPE,
-            "User-Agent": "Xcode",
+            "User-Agent": self.anisette.user_agent,
             "Accept": "text/x-xml-plist",
             "Accept-Language": "en-us",
             "X-Apple-Identity-Token": identity_token,
             "X-Apple-App-Info": "com.apple.gs.xcode.auth",
-            "X-Xcode-Version": "11.2 (11B41)",
+            "X-Xcode-Version": const.XCODE_VERSION,
+            "X-Mme-Client-Info": self.anisette.client_info,
         }
         h.update(identity_headers(self.device, self.anisette))
-        h["X-Mme-Client-Info"] = self.anisette.client_info or const.GSA_CLIENT_INFO
         return h
 
 

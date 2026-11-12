@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from icp import config, doctor
-from icp.auth.anisette import Anisette
+from icp.auth.anisette import Anisette, AnisetteError
 
 TCP_HEADER = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid\n"
 
@@ -28,9 +28,10 @@ class ConfigTests(unittest.TestCase):
         self.addCleanup(p.stop)
         os.environ.pop("ICP_ANISETTE_URL", None)
 
-    def test_default_is_loopback(self):
-        self.assertEqual(config.anisette_url(), "http://127.0.0.1:6969")
-        self.assertTrue(config.is_loopback(config.anisette_url()))
+    def test_there_is_no_default_server(self):
+        self.assertIsNone(config.anisette_url())
+        with self.assertRaisesRegex(AnisetteError, "no anisette server URL configured"):
+            Anisette()
 
     def test_precedence_explicit_env_file_default(self):
         (Path(self.dir) / "icp").mkdir(exist_ok=True)
@@ -44,7 +45,7 @@ class ConfigTests(unittest.TestCase):
     def test_bad_config_file_is_ignored(self):
         (Path(self.dir) / "icp").mkdir(exist_ok=True)
         (Path(self.dir) / "icp" / "config.toml").write_text("anisette_url = [broken")
-        self.assertEqual(config.anisette_url(), "http://127.0.0.1:6969")
+        self.assertIsNone(config.anisette_url())
 
     def test_is_loopback(self):
         for u in ("http://localhost:6969", "http://127.0.0.2:1", "http://[::1]:6969", "127.0.0.1:6969"):
@@ -79,12 +80,12 @@ class ExposureTests(unittest.TestCase):
         resp = mock.Mock(ok=True, status_code=200)
         with mock.patch("requests.get", return_value=resp), \
                 mock.patch.object(doctor, "listening_exposed", return_value=["0.0.0.0"]):
-            sev, msg, hint = doctor.check_anisette(None)
+            sev, msg, hint = doctor.check_anisette("http://127.0.0.1:6969")
         self.assertEqual(sev, doctor.WARN)
         self.assertIn("0.0.0.0", msg)
         with mock.patch("requests.get", return_value=resp), \
                 mock.patch.object(doctor, "listening_exposed", return_value=[]):
-            self.assertEqual(doctor.check_anisette(None)[0], doctor.OK)
+            self.assertEqual(doctor.check_anisette("http://127.0.0.1:6969")[0], doctor.OK)
 
     def test_run_command_binds_loopback(self):
         cmd = doctor.anisette_run_command("docker")

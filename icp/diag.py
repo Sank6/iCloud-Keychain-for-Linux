@@ -1,5 +1,4 @@
-"""Diagnostic logging for the token flow. `login --debug` writes a redacted transcript to
-~/.config/icp/debug-<ts>.log - secret values are replaced with their length, safe to share."""
+"""Redacted diagnostic logging."""
 
 from collections import Counter
 import json
@@ -15,11 +14,13 @@ from .sharing import groups as sharing
 from .transport import ckks, cloudkit
 from .vault.host import CredentialStore, classify_item
 
-# Keys whose string values must never be written verbatim.
 _SECRET_HINTS = (
     "token", "pet", "sk", "spd", "m1", "m2", "secret", "password", "pwd",
     "cookie", "auth", "prk", "et", "key", "salt", "challenge",
+    "dsid", "dsprsid", "idms", "email", "phone", "name", "alias", "address",
+    "appleid", "user",
 )
+_SECRET_KEYS = {"fn", "ln"}
 
 
 def redact(value, key: str = ""):
@@ -29,13 +30,16 @@ def redact(value, key: str = ""):
         return {k: redact(v, str(k)) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [redact(v, key) for v in value]
+    low = key.lower()
+    sensitive = low in _SECRET_KEYS or any(hint in low for hint in _SECRET_HINTS)
     if isinstance(value, str):
-        low = key.lower()
-        if any(h in low for h in _SECRET_HINTS) and len(value) > 8:
+        if sensitive:
             return f"<redacted:{len(value)}>"
         if len(value) > 80:
             return f"<str:{len(value)}>"
         return value
+    if sensitive and value is not None:
+        return f"<redacted:{type(value).__name__}>"
     return value
 
 

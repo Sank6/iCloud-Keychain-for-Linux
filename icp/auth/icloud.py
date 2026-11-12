@@ -5,27 +5,19 @@ import base64
 import logging
 import plistlib as plist
 
-import urllib3
-
 from .. import net
+from ..errors import AppleError
 from .anisette import Anisette
 from .device import Device
-from .headers import identity_headers
-from .. import const
-from ..errors import AppleError
+from .headers import identity_headers, service_client_info
 
-urllib3.disable_warnings()
 logger = logging.getLogger(__name__)
 
 LOGIN_DELEGATES_URL = "https://setup.icloud.com/setup/iosbuddy/loginDelegates"
 ACCOUNT_SETTINGS_URL = "https://setup.icloud.com/setup/get_account_settings"
 
-# Windows AOSKit/accountsd identity for both iCloud setup endpoints.
 ICLOUD_USER_AGENT = "com.apple.iCloudHelper/282 CFNetwork/1408.0.4 Darwin/22.5.0"
-ICLOUD_CLIENT_INFO = (
-    "<PC> <Windows;6.2(0,0);9200> "
-    "<com.apple.AOSKit/282 (com.apple.accountsd/113)>"
-)
+ICLOUD_SERVICE_IDENTITY = "com.apple.AOSKit/282 (com.apple.accountsd/113)"
 
 
 class ICloudError(AppleError):
@@ -65,13 +57,13 @@ def login_mobileme(username: str, pet: str, adsid: str, client_id: str,
     headers = {
         "X-Apple-ADSID": adsid,
         "User-Agent": ICLOUD_USER_AGENT,
+        "X-Mme-Client-Info": service_client_info(anisette, ICLOUD_SERVICE_IDENTITY),
         "Accept": "*/*",
     }
     headers.update(identity_headers(device, anisette))
-    headers["X-Mme-Client-Info"] = const.with_device(ICLOUD_CLIENT_INFO, anisette.client_info)
     headers["Authorization"] = _basic(username, pet)  # apple-id:PET (NOT dsid:PET)
 
-    resp = _post("loginDelegates", url, headers=headers, data=body, verify=False)
+    resp = _post("loginDelegates", url, headers=headers, data=body)
     logger.debug("loginDelegates -> HTTP %s (%d bytes)", resp.status_code, len(resp.content))
     try:
         data = plist.loads(resp.content)
@@ -104,13 +96,13 @@ def fetch_account_settings(record: dict, device: Device, anisette: Anisette,
 
     headers = {
         "Authorization": _basic(str(dsid), token),
+        "X-Mme-Client-Info": service_client_info(anisette, ICLOUD_SERVICE_IDENTITY),
         "User-Agent": ICLOUD_USER_AGENT,
         "Accept": "*/*",
     }
     headers.update(identity_headers(device, anisette))
-    headers["X-Mme-Client-Info"] = const.with_device(ICLOUD_CLIENT_INFO, anisette.client_info)
 
-    resp = _post("account settings", url, headers=headers, data="", verify=False)
+    resp = _post("account settings", url, headers=headers, data="")
     logger.debug("get_account_settings -> HTTP %s (%d bytes)",
                  resp.status_code, len(resp.content))
     if resp.status_code == 403 and (ne := net.auth_error(resp, "the account request")):

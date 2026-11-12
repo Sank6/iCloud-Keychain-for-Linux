@@ -18,7 +18,6 @@ import tomllib
 from urllib.parse import urlparse
 
 from . import paths
-from .const import DEFAULT_ANISETTE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +44,11 @@ def get(key: str, *, env: str | None = None, explicit: str | None = None,
     return str(value) if value else default
 
 
-def anisette_url(explicit: str | None = None) -> str:
-    return get("anisette_url", env="ICP_ANISETTE_URL", explicit=explicit,
-               default=DEFAULT_ANISETTE_URL).rstrip("/")
+def anisette_url(explicit: str | None = None) -> str | None:
+    """The configured anisette server, or None. There is deliberately no default: Apple rejects
+    the popular Android-library Docker image, so a silent default would just fail."""
+    url = get("anisette_url", env="ICP_ANISETTE_URL", explicit=explicit)
+    return url.strip().rstrip("/") if url else None
 
 
 def client_info() -> str | None:
