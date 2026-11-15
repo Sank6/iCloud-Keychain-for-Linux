@@ -11,13 +11,11 @@ import json
 
 import requests
 import srp._pysrp as srp
-import urllib3
 
 from ..errors import AppleError
 
 srp.rfc5054_enable()
 srp.no_username_in_x()
-urllib3.disable_warnings()
 
 AUTH_ENDPOINT = "https://idmsa.apple.com/appleauth/auth"
 SETUP_ENDPOINT = "https://setup.icloud.com/setup/ws/1"
@@ -75,7 +73,6 @@ class WebAuthSession:
         self.session_data = dict(session_data or {})
         self.needs_2fa = False
         self.http = requests.Session()
-        self.http.verify = False
         self.http.headers["User-Agent"] = _USER_AGENT
         if cookies:
             requests.utils.add_dict_to_cookiejar(self.http.cookies, cookies)
