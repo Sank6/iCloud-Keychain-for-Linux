@@ -93,6 +93,17 @@ class MatchAliasesTests(unittest.TestCase):
         ])
         self.assertEqual(store.match("dash.cloudflare.com")[0].password, "pw")
 
+    def test_wifi_passwords_never_match_a_page(self):
+        store = CredentialStore.from_items([
+            {"svce": "AirPort", "acct": "Home-WiFi", "v_Data": b"wifi-pw", "labl": "Home-WiFi"},
+            {"svce": "AirPort", "acct": "Office Guest", "v_Data": b"guest-pw",
+             "labl": "Office Guest"},
+        ])
+        self.assertEqual(len(store), 2)  # still in the vault, e.g. for `icp show`
+        for page in ("wifi.example.com", "home.example.com", "guest.example.com",
+                     "office.com", "airport", "airport.example.com"):
+            self.assertEqual(store.match(page), [], page)
+
     def test_from_items_drops_internal_records(self):
         # PCS service blobs and per-site "Website Metadata" sync alongside real logins but are
         # not credentials.
