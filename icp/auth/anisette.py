@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from urllib.parse import urlsplit
 
 import requests
@@ -26,6 +27,9 @@ class Anisette:
         "X-Apple-I-TimeZone",
         "X-Apple-Locale",
     )
+    # One sync makes dozens of Apple calls; a server that launches a process per request
+    # (Anisette-on-Wine: ~4 s each) would otherwise dominate the run.
+    _REUSE_SECONDS = 20.0
 
     def __init__(self, url: str | None = None, *, timeout: int = 20):
         configured = (url or os.environ.get("ICP_ANISETTE_URL") or "").strip().rstrip("/")
@@ -40,6 +44,8 @@ class Anisette:
         self.url = configured
         self.timeout = timeout
         self._client_info: dict[str, str] | None = None
+        self._headers: dict[str, str] | None = None
+        self._headers_at = 0.0
 
     @property
     def client_info(self) -> str:
@@ -78,6 +84,8 @@ class Anisette:
         return self._client_info
 
     def headers(self) -> dict:
+        if self._headers is not None and time.monotonic() - self._headers_at < self._REUSE_SECONDS:
+            return dict(self._headers)
         try:
             response = requests.get(self.url, timeout=self.timeout)
             response.raise_for_status()
@@ -94,4 +102,5 @@ class Anisette:
             raise AnisetteError(
                 f"anisette server at {self.url} did not return X-Apple-I-MD / X-Apple-I-MD-M"
             )
-        return headers
+        self._headers, self._headers_at = headers, time.monotonic()
+        return dict(headers)
