@@ -11,7 +11,17 @@ reverse engineering attempt and **is not affiliated with Apple in any way**.
 
 ## What you'll need
 
-A configured Anisette server (recommend [Anisette-on-Wine](https://github.com/Sank6/Anisette-on-Wine) to run locally on Linux or [omnisette-server](https://github.com/SideStore/omnisette-server), or any trusted third party anisette server):
+A configured Anisette server:
+
+- [anisette-rs](https://github.com/Sank6/anisette-rs) (**recommended**) runs natively on Linux -
+  uses Windows iCloud headers.
+- [Anisette-on-Wine](https://github.com/Sank6/Anisette-on-Wine) runs the Windows iCloud
+  libraries locally under Wine.
+- [omnisette-server](https://github.com/SideStore/omnisette-server) runs locally on Linux
+  (including via Docker) using libraries from the Android Apple Music APK, and can also be
+  hosted on a remote server.
+
+You can also use any trusted third-party anisette server.
 
 ```
 export ICP_ANISETTE_URL="https://your-anisette-server.example"
