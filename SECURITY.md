@@ -62,9 +62,10 @@ browser extension. This file says what that does and does not protect against.
   after 8 hours and are not persisted, so every browser start re-pairs.
 - **Scope**: read-only. Save/update/TOTP requests are ignored. Lookups reuse the agent, so they obey
   its lock state and idle lock.
-- **Getting past Apple's OS gate**: Apple's extension refuses to start on Linux. `icp setup
-  --apple-extension useragent` starts the browser with a Windows user agent (the store extension
-  stays unmodified and auto-updates; every site in that browser sees a Windows UA, and only a
-  desktop entry we wrote is ever removed). `--apple-extension patched` builds a local copy from
-  your own installed extension with only the OS check changed; it is not auto-updated and is not
-  signed, so re-run it after an update. Apple's code is never shipped in this repo.
+- **Getting past Apple's OS gate**: Apple's extension refuses to start on Linux. `icp setup` edits
+  one function (`checkForValidOS`) in the extension copy your own browser installed, in place. The
+  original `background.js` is saved under `~/.local/share/icp/apple-extension-orig/` and
+  `icp apple-extension restore` puts it back. A systemd user path unit re-applies the edit when the
+  browser updates the extension. The edit is not signed by Apple and only touches your local copy;
+  Apple's code is never shipped in this repo. `--apple-extension unpacked` instead builds a separate
+  copy for Developer mode -> Load unpacked.

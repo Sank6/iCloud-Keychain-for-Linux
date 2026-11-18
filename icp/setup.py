@@ -29,14 +29,14 @@ def _units() -> dict[str, str]:
     }
 
 
-def install_timer() -> bool:
+def _install_units(units: dict[str, str], enable: str) -> bool:
     if not shutil.which("systemctl"):
-        ui.warn("systemd not found; skipping the sync timer")
+        ui.warn("systemd not found; skipping " + enable)
         return False
     UNIT_DIR.mkdir(parents=True, exist_ok=True)
-    for name, text in _units().items():
+    for name, text in units.items():
         (UNIT_DIR / name).write_text(text)
-    for cmd in (["daemon-reload"], ["enable", "--now", "icp-sync.timer"]):
+    for cmd in (["daemon-reload"], ["enable", "--now", enable]):
         r = subprocess.run(["systemctl", "--user", *cmd], capture_output=True, text=True)
         if r.returncode:
             ui.warn(f"systemctl --user {' '.join(cmd)}: {r.stderr.strip()}")
@@ -44,49 +44,73 @@ def install_timer() -> bool:
     return True
 
 
-def apple_extension(mode: str | None) -> None:
-    """Register the host Apple's own extension talks to, and (when asked) make the extension
-    start on Linux. See icp/applehost_install.py for the two modes."""
+def install_timer() -> bool:
+    return _install_units(_units(), "icp-sync.timer")
+
+
+def _extension_units() -> dict[str, str]:
+    """A path unit that re-applies the OS-check patch whenever the browser (re)installs or updates
+    Apple's extension: it watches each profile's Extensions folder (new versions appear there)."""
     from . import applehost_install as ah
-    done = ah.install()
-    for label, f in done:
+    watched = []
+    for _label, prof in ah.profiles():
+        watched.append(prof / "Extensions")
+        if (prof / "Extensions" / ah.APPLE_EXTENSION_ID).is_dir():
+            watched.append(prof / "Extensions" / ah.APPLE_EXTENSION_ID)
+    return {
+        "icp-apple-extension.path": (
+            "[Unit]\nDescription=Re-apply the iCloud Passwords patch when the browser updates it\n\n"
+            "[Path]\n" + "".join(f"PathChanged={w}\n" for w in watched)
+            + "Unit=icp-apple-extension.service\n\n[Install]\nWantedBy=default.target\n"),
+        "icp-apple-extension.service": (
+            "[Unit]\nDescription=Patch Apple's iCloud Passwords extension for Linux\n"
+            "StartLimitIntervalSec=0\n\n"
+            f"[Service]\nType=oneshot\nExecStart={sys.executable} -m icp.cli.app "
+            "apple-extension patch --wait 90 --quiet\n"),
+    }
+
+
+def _disable_extension_watcher() -> None:
+    if shutil.which("systemctl"):
+        subprocess.run(["systemctl", "--user", "disable", "--now", "icp-apple-extension.path"],
+                       capture_output=True)
+    for name in ("icp-apple-extension.path", "icp-apple-extension.service"):
+        (UNIT_DIR / name).unlink(missing_ok=True)
+
+
+def apple_extension(mode: str | None) -> None:
+    """Register the host Apple's own extension talks to and make the extension start on Linux:
+    patch the installed copy in place and keep it patched (see icp/applehost_install.py)."""
+    from . import applehost_install as ah
+    for label, f in ah.install():
         ui.out(f"  host registered for {label}: {f}")
-    if mode == "useragent":
-        entries = ah.desktop_ids_for_detected()
-        if not entries:
-            ui.warn("no browser desktop entry found to add the Windows user agent to")
-        for label, did in entries:
-            major = ah.browser_major(ah.exec_binary(did) or "") or ah.DEFAULT_MAJOR
-            p = ah.windows_ua_entry(did, major)
-            ui.out(f"  {label}: launcher with a Windows user agent -> {p}")
-        if entries:
-            ui.out("  Install Apple's 'iCloud Passwords' extension from the Chrome Web Store. Every\n"
-                   "  site in that browser will see a Windows user agent.")
-            running = ah.status()["running_without_ua"]
-            if running:
-                ui.warn("the browser is already running, so it ignores the new flag: quit it "
-                        "completely (browser menu -> Exit; it can keep running in the background "
-                        "after its windows close), then reopen it from the app grid")
-    elif mode == "patched":
-        for _, did in ah.desktop_ids_for_detected():
-            if ah.restore_entry(did):
-                ui.out(f"  removed the Windows user agent from {did}")
-        out = ah.patch_extension()     # exits with a message when the store version is missing
-        ui.out(f"  patched copy of your installed extension: {out}")
-        ui.out("  chrome://extensions -> Developer mode -> Load unpacked -> that folder, and turn\n"
-               "  the store copy off (both share one extension id). Re-run after Apple updates it.")
-    elif mode == "off":
-        for _, did in ah.desktop_ids_for_detected():
-            if ah.restore_entry(did):
-                ui.out(f"  restored the original launcher {did}")
-    else:
-        st = ah.status()
-        ui.out("  Apple's extension refuses to start on Linux. Choose how to get past that:\n"
-               "    icp setup --apple-extension useragent   unmodified store extension, browser\n"
-               "                                            reports a Windows user agent\n"
-               "    icp setup --apple-extension patched     local patched copy, normal user agent")
-        if st["mode"]:
-            ui.out(f"  currently prepared: {st['mode']}")
+    if mode == "off":
+        _disable_extension_watcher()
+        for folder in ah.restore_in_place():
+            ui.out(f"  restored the original extension in {folder}")
+        ui.out("  Apple's extension is back to stock; reload it in the browser.")
+        return
+    if mode == "unpacked":
+        _disable_extension_watcher()
+        out = ah.patch_unpacked_copy()      # exits with a message when the store copy is missing
+        ui.out(f"  patched copy: {out}\n  Developer mode -> Load unpacked -> that folder, and turn "
+               "the store copy off (both share one extension id). Re-run after Apple updates it.")
+        return
+    if ah.UNPACKED.exists():
+        shutil.rmtree(ah.UNPACKED, ignore_errors=True)
+        ui.out("  removed the old separate copy (the installed extension is patched in place now)")
+    results = ah.patch_in_place()
+    for folder, state in results:
+        ui.out(f"  {state}: {folder}")
+    if not results:
+        ui.out("  Apple's 'iCloud Passwords' extension is not installed yet. Install it from the\n"
+               "  Chrome Web Store: the watcher below patches it as soon as it appears.")
+    if any(state == "unknown" for _f, state in results):
+        ui.warn("an extension version this project does not recognise was left untouched")
+    if _install_units(_extension_units(), "icp-apple-extension.path"):
+        ui.out("  watcher enabled: the patch is re-applied after every extension update")
+    if any(state == "patched" for _f, state in results):
+        ui.out("  Reload the extension on the browser's extensions page (or restart the browser).")
 
 
 def run(args) -> int:

@@ -42,10 +42,12 @@ Host -> ext: `iv||ct||tag` (the two directions differ in the extension's code).
 - cmd 10 is sent when a request arrives with no valid session; cmd 9 while PIN pairing is locked out.
 
 ## Verified end to end on Linux (extension 3.4.0, Chromium 157)
-Both ways past the OS gate work with this host: (a) the unmodified Web Store extension in a browser
-started with `--user-agent` set to a Windows UA (`checkForValidOS` matches `\(Windows\s*\w*\s*(\d*)\.(\d*)`,
-state goes `NotInSession` -> `MSG1Set` -> `SessionKeySet` after the PIN), and (b) a copy with the gate
-short-circuited. A `CmdGetLoginNames4URL` lookup returned `STATUS 0` and the matching entry.
+With the one-function OS-gate patch applied **in place** to the store-installed copy (signature data
+kept or removed, Developer mode on or off), the extension starts, connects to this host, and goes
+`NotInSession` -> `MSG1Set` -> `SessionKeySet` after the PIN. A `CmdGetLoginNames4URL` lookup returned
+`STATUS 0` and the matching entry. (A Windows user agent also satisfies `checkForValidOS`, whose
+regex is `\(Windows\s*\w*\s*(\d*)\.(\d*)`, but it makes the browser look like a bot to some sites and
+is not used.)
 
 ## UNVERIFIED
 Behaviour in a long-lived real profile; Apple's real-host message for non-zero `STATUS` values other than

@@ -193,7 +193,7 @@ def check_notify():
 
 
 def check_apple_extension():
-    """Apple's own iCloud Passwords extension: host registered and a way past its Linux gate."""
+    """Apple's own iCloud Passwords extension: host registered and the extension patched."""
     from . import applehost_install as ah
     st = ah.status()
     if not st["hosts"]:
@@ -201,26 +201,41 @@ def check_apple_extension():
     broken = [f"{label}: {problem}" for label, ok, problem in st["hosts"] if not ok]
     if broken:
         return FAIL, "Apple extension host: " + "; ".join(broken), "run `icp setup`"
+    if not st["installed"] and st["mode"] != "unpacked":
+        return WARN, "Apple's iCloud Passwords extension is not installed in any browser", \
+            "install it from the Chrome Web Store, then run `icp setup` (the watcher patches it)"
     if st["mode"] is None:
-        return WARN, ("Apple's iCloud Passwords extension host is registered, but the extension "
-                      "refuses to start on Linux"), \
-            "run `icp setup --apple-extension useragent` (or `patched`)"
-    if st["mode"] == "patched" and st["patched_outdated"]:
-        have, new = st["patched_outdated"]
+        return WARN, "Apple's iCloud Passwords extension is installed but not patched for Linux", \
+            "run `icp setup` (or `icp apple-extension patch`), then reload the extension"
+    if st["disabled"]:
+        return FAIL, ("your browser disabled the patched extension (" + ", ".join(st["disabled"])
+                      + ")"), "run `icp setup --apple-extension unpacked` and load that copy instead"
+    if st["outdated_copy"]:
+        have, new = st["outdated_copy"]
         return WARN, (f"Apple updated the iCloud Passwords extension ({have} -> {new}); your "
-                      "patched copy is still the old one"), \
-            "run `icp setup --apple-extension patched`, then reload it in the browser's extensions page"
-    if st["mode"] == "useragent" and st["running_without_ua"]:
-        return WARN, ("your browser is still running from before the Windows user agent was set "
-                      "up, so Apple's extension keeps refusing to start"), \
-            ("quit it completely (it may keep running in the background: browser menu -> Exit) "
-             "and reopen it from the app grid; or use `icp setup --apple-extension patched`")
-    return OK, f"Apple's iCloud Passwords extension host is ready ({st['mode']} mode)", ""
+                      "unpacked copy is still the old one"), \
+            "run `icp setup --apple-extension unpacked`, then reload it in the extensions page"
+    return OK, f"Apple's iCloud Passwords extension host is ready ({st['mode']} patch)", ""
+
+
+def check_extension_watcher():
+    """The path unit that re-patches Apple's extension after the browser updates it."""
+    from . import applehost_install as ah
+    if ah.status()["mode"] != "inplace":
+        return OK, "extension watcher not needed", ""
+    if not shutil.which("systemctl"):
+        return WARN, "systemd not found: Apple's extension will not be re-patched after updates", ""
+    r = subprocess.run(["systemctl", "--user", "is-enabled", "icp-apple-extension.path"],
+                       capture_output=True, text=True)
+    if r.stdout.strip() == "enabled":
+        return OK, "extension watcher enabled (re-patches after updates)", ""
+    return WARN, "extension watcher not installed: an Apple update would undo the patch", \
+        "run `icp setup`"
 
 
 def run(anisette_url: str | None = None) -> int:
     results = [check_anisette(anisette_url), check_keyring(), check_signin(), *check_files(),
-               check_sync_status(), *check_hosts(), check_apple_extension(), check_timer(),
+               check_sync_status(), *check_hosts(), check_apple_extension(), check_extension_watcher(), check_timer(),
                check_notify()]
     for sev, msg, hint in results:
         print(f" {_MARK[sev]} {msg}")

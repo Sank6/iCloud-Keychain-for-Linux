@@ -942,6 +942,25 @@ def cmd_doctor(args) -> int:
     return doctor.run(args.anisette)
 
 
+def cmd_apple_extension(args) -> int:
+    """Patch / restore / report Apple's iCloud Passwords extension (used by the systemd watcher)."""
+    from .. import applehost_install as ah
+    if args.action == "restore":
+        for folder in ah.restore_in_place():
+            ui.out(f"restored: {folder}")
+        return 0
+    if args.action == "status":
+        st = ah.status()
+        ui.out(f"mode: {st['mode'] or 'not patched'}")
+        for folder, state in st["installed"]:
+            ui.out(f"  {state}: {folder}")
+        return 0
+    for folder, state in ah.patch_in_place(wait=args.wait):
+        if not args.quiet or state == "patched":
+            ui.out(f"{state}: {folder}")
+    return 0
+
+
 def cmd_setup(args) -> int:
     from .. import setup
     return setup.run(args)
@@ -1011,14 +1030,22 @@ def main(argv=None) -> int:
 
     up = sub.add_parser("setup", help="register the browser host, anisette check, sync timer")
     up.add_argument("-y", "--yes", action="store_true", help="don't ask before starting things")
-    up.add_argument("--apple-extension", choices=["useragent", "patched", "off"],
-                    help="make Apple's own iCloud Passwords extension work on Linux: 'useragent' "
-                         "(browser reports Windows; the store extension stays unmodified), "
-                         "'patched' (local patched copy) or 'off' (undo the launcher change)")
+    up.add_argument("--apple-extension", choices=["unpacked", "off"],
+                    help="Apple's own iCloud Passwords extension is patched in place by default; "
+                         "'unpacked' builds a separate copy to load with Developer mode instead "
+                         "(for browsers that reject an edited store extension), 'off' restores "
+                         "the original and removes the watcher")
     up.add_argument("--no-timer", action="store_true", help="don't install the systemd timer")
     up.add_argument("--extension-id", action="append",
                     help="also allow this extension id (e.g. an unpacked build with another id)")
     up.set_defaults(func=cmd_setup)
+
+    ae = sub.add_parser("apple-extension",
+                        help="patch, restore or report Apple's iCloud Passwords extension")
+    ae.add_argument("action", choices=["patch", "restore", "status"])
+    ae.add_argument("--wait", type=float, default=0, help="seconds to wait for it to appear")
+    ae.add_argument("--quiet", action="store_true")
+    ae.set_defaults(func=cmd_apple_extension)
 
     op = sub.add_parser("logout", help="clear the session, saved Apple ID and keyring mirror")
     op.add_argument("--wipe-device", action="store_true", help="also remove the device identity")

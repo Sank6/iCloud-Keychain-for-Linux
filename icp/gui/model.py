@@ -46,27 +46,27 @@ def autofill_summary(st: dict) -> tuple[str, str]:
         return "Browser integration needs repair", "\n".join(broken) + "\n\nRun `icp setup`."
     names = ", ".join(label for label, _ok, _p in st["hosts"])
     mode = st["mode"]
-    if mode == "useragent" and st.get("running_without_ua"):
-        return ("Restart your browser to finish",
-                f"{names} is still running from before the Windows user agent was set up, so "
-                "Apple's extension still refuses to start. It may keep running in the "
-                "background: quit it completely (browser menu, Exit), then reopen it from the "
-                "app grid. Or run `icp setup --apple-extension patched`, which needs no restart.")
-    if mode == "useragent":
+    if not st["installed"] and mode != "unpacked":
+        return ("Install Apple's extension",
+                f"Install \"iCloud Passwords\" from the Chrome Web Store in {names}. It is "
+                "patched for Linux automatically as soon as it appears.")
+    if mode == "inplace" and st["disabled"]:
+        return ("Your browser disabled the patched extension",
+                "Run `icp setup --apple-extension unpacked`, then load that copy with Developer "
+                "mode -> Load unpacked.")
+    if mode == "inplace":
         return ("Apple's extension is ready",
-                f"{names}: starts with a Windows user agent, so Apple's unmodified iCloud "
-                "Passwords extension from the Chrome Web Store works. Quit the browser and "
-                "reopen it from the app grid if you have not since running setup. Pair it with "
-                "the 6-digit code shown in a notification.")
-    if mode == "patched":
-        return ("Apple's extension is ready (patched copy)",
-                f"{names}: load the patched copy once (chrome://extensions, Developer mode, "
-                "Load unpacked) and turn the store version off. Re-run "
-                "`icp setup --apple-extension patched` after Apple updates the extension.")
-    return ("Apple's extension cannot start on Linux yet",
-            "Apple's iCloud Passwords extension refuses to run on Linux. Pick one:\n"
-            "  icp setup --apple-extension useragent   (unmodified store extension)\n"
-            "  icp setup --apple-extension patched     (local patched copy)")
+                f"{names}: Apple's iCloud Passwords extension is patched for Linux and re-patched "
+                "after every update. Click its icon and type the 6-digit pairing code shown in a "
+                "notification (once per browser start). If it was installed just now, reload it "
+                "on the extensions page first.")
+    if mode == "unpacked":
+        return ("Apple's extension is ready (separate copy)",
+                f"{names}: load the copy once (extensions page, Developer mode, Load unpacked) and "
+                "turn the store version off. Re-run `icp setup --apple-extension unpacked` after "
+                "Apple updates the extension.")
+    return ("Apple's extension is not patched yet",
+            "Run `icp setup`: it patches the installed extension and keeps it patched.")
 
 
 @dataclass

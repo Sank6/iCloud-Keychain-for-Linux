@@ -169,7 +169,7 @@ class PatcherTests(unittest.TestCase):
         from icp import applehost_install as ai
         with tempfile.TemporaryDirectory() as t:
             src = self._fake_ext(t, "a();function checkForValidOS(){return 0}b();")
-            out = ai.patch_extension(src, Path(t) / "out")
+            out = ai.patch_unpacked_copy(Path(t) / "out", src)
             js = (out / "background.js").read_text()
             self.assertIn(ai.PATCH, js)
             self.assertFalse((out / "_metadata").exists())
@@ -181,5 +181,5 @@ class PatcherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             src = self._fake_ext(t, "nothing here")
             with self.assertRaises(SystemExit):
-                ai.patch_extension(src, Path(t) / "out")
+                ai.patch_unpacked_copy(Path(t) / "out", src)
             self.assertFalse((Path(t) / "out").exists())

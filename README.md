@@ -95,28 +95,27 @@ Two options. Both fill from your local vault and neither contacts Apple.
 
 ### Apple's own "iCloud Passwords" extension (Chromium browsers)
 
-Install **iCloud Passwords** from the Chrome Web Store, then run `icp setup`. Apple's extension
-refuses to start on Linux (it only runs on macOS or a Windows user agent), so choose how to get
-past that:
+Install **iCloud Passwords** from the Chrome Web Store, then run `icp setup`. That is all:
 
-```
-icp setup --apple-extension useragent    # the unmodified store extension; the browser reports
-                                         # a Windows user agent (quit and reopen it afterwards)
-icp setup --apple-extension patched      # a local patched copy; the browser keeps its real UA
-```
+- Apple's extension refuses to start on Linux (it only runs on macOS or a Windows user agent).
+  `icp setup` changes that one check in your own installed copy, **in place**: the original file is
+  saved first, nothing else is touched, and the browser keeps its real user agent, so sites see a
+  normal browser. Reload the extension on the extensions page (or restart the browser) once.
+- A systemd path unit watches your browser's extension folders and re-applies the patch whenever
+  the browser installs or updates the extension, so it keeps working. It also patches it as soon as
+  you install the extension if you ran `icp setup` first.
+- The first time (and after each browser start) the extension shows a 6-digit pairing code in a
+  desktop notification: type it into the extension's popup.
+- `icp apple-extension status|patch|restore` and `icp setup --apple-extension off` inspect, redo
+  or undo the patch. `icp doctor` and the Passwords app (**Browser autofill...**) show the state.
 
-- `useragent` rewrites the browser's launcher so it starts with `--user-agent=...Windows...`. The
-  store extension keeps auto-updating, but every site in that browser sees a Windows user agent
-  while the browser's other signals (client hints, `navigator.platform`) still say Linux, which
-  some sites' bot detection flags. A browser that is already running ignores the flag, so quit it
-  completely first. `icp setup --apple-extension off` puts the original launcher back.
-  **Prefer `patched` for a daily browser.**
-- `patched` copies your *own* installed extension and changes one function (its OS check). Load it
-  with **Developer mode -> Load unpacked** and turn the store copy off; re-run after Apple updates it.
+Checked on Helium (Chromium 157): the browser runs the edited extension whether or not Developer
+mode is on. A browser that enforces extension content verification may disable an edited store
+extension; `icp doctor` says so, and `icp setup --apple-extension unpacked` builds a separate copy
+you load with Developer mode -> Load unpacked instead.
 
-The first time, the extension shows a 6-digit pairing code in a desktop notification: type it into
-the extension's popup. The Passwords app (**Browser autofill...**) and `icp doctor` show what is set
-up. The host is read-only; see `docs/apple-extension-protocol.md` and `SECURITY.md`.
+The host is read-only; see `docs/apple-extension-protocol.md` and `SECURITY.md`. Apple's code is
+never shipped in this repo.
 
 ### This project's own extension
 

@@ -1,120 +1,183 @@
-"""Apple's own extension on Linux: launcher with a Windows user agent, patched copy, status."""
+"""Apple's own extension on Linux: patched in place, restored, re-patched, reported."""
 
 import json
+import threading
+import time
 
 import pytest
 
 from icp import applehost_install as ah
-from icp import doctor, hosts
+from icp import doctor, hosts, setup
 
-VENDOR = """[Desktop Entry]
-Name=Helium
-Exec=helium %U
-Icon=helium
-
-[Desktop Action new-window]
-Name=New Window
-Exec=helium
-
-[Desktop Action new-private-window]
-Name=New Incognito Window
-Exec=helium --incognito
-"""
+STOCK = "var a=1;function checkForValidOS(){if(navigator.platform===\"MacIntel\")return 1}var b=2;"
 
 
 @pytest.fixture
-def home(tmp_path, monkeypatch):
-    data = tmp_path / "data"
+def browser(tmp_path, monkeypatch):
     cfg = tmp_path / "config"
-    vendor = tmp_path / "usr/applications"
-    vendor.mkdir(parents=True)
-    (vendor / "helium.desktop").write_text(VENDOR)
-    monkeypatch.setattr(hosts, "DATA", data)
+    monkeypatch.setattr(hosts, "DATA", tmp_path / "data")
     monkeypatch.setattr(hosts, "CFG", cfg)
-    monkeypatch.setenv("XDG_DATA_DIRS", str(tmp_path / "usr"))
-    monkeypatch.setattr(hosts, "CHROMIUM", [
-        ("Helium", cfg / "net.imput.helium", cfg / "net.imput.helium/NativeMessagingHosts")])
+    root = cfg / "net.imput.helium"
+    monkeypatch.setattr(hosts, "CHROMIUM", [("Helium", root, root / "NativeMessagingHosts")])
     monkeypatch.setattr(hosts, "FIREFOX", [])
-    (cfg / "net.imput.helium").mkdir(parents=True)
-    return tmp_path
+    monkeypatch.setattr(ah, "BACKUPS", tmp_path / "data/icp/apple-extension-orig")
+    monkeypatch.setattr(ah, "UNPACKED", tmp_path / "data/icp/apple-extension")
+    (root / "Default/Extensions").mkdir(parents=True)
+    return root
 
 
-def test_windows_ua_entry_rewrites_every_exec_line(home):
-    p = ah.windows_ua_entry("helium.desktop", 150)
-    text = p.read_text()
-    assert p == home / "data/applications/helium.desktop"
-    assert text.count("--user-agent=") == 3
-    assert 'Exec=helium --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)' in text
-    assert "Chrome/150.0.0.0" in text
-    assert "--incognito" in text and "%U" in text            # original arguments survive
-    assert text.splitlines()[0] == "[Desktop Entry]" and ah.UA_MARKER in text
-    assert ah.windows_ua_active("helium.desktop")
-    assert ah.exec_binary("helium.desktop") == "helium"
+def install_extension(root, version="3.4.0", js=STOCK):
+    d = root / "Default/Extensions" / ah.APPLE_EXTENSION_ID / f"{version}_0"
+    (d / "_metadata").mkdir(parents=True)
+    (d / "_metadata/verified_contents.json").write_text("{}")
+    (d / "manifest.json").write_text(json.dumps({"version": version, "key": "k"}))
+    (d / "background.js").write_text(js)
+    return d
 
 
-def test_restore_only_removes_a_file_we_wrote(home):
-    assert not ah.restore_entry("helium.desktop")
-    ah.windows_ua_entry("helium.desktop")
-    assert ah.restore_entry("helium.desktop") and not ah.windows_ua_active("helium.desktop")
-    mine = home / "data/applications/helium.desktop"
-    mine.parent.mkdir(parents=True, exist_ok=True)
-    mine.write_text("[Desktop Entry]\nExec=helium\n")         # the user's own override
-    assert not ah.restore_entry("helium.desktop") and mine.exists()
+def test_patch_in_place_changes_only_the_gate_and_keeps_a_backup(browser):
+    d = install_extension(browser)
+    assert ah.patch_in_place() == [(d, "patched")]
+    text = (d / "background.js").read_text()
+    assert text == STOCK.replace(ah.GATE, ah.PATCH)
+    assert (d / "_metadata/verified_contents.json").exists()      # signature data left alone
+    assert not list(d.glob("*.icp-new"))
+    assert (ah.BACKUPS / "3.4.0/background.js").read_text() == STOCK
 
 
-def test_unknown_browser_has_no_entry(home):
-    with pytest.raises(FileNotFoundError):
-        ah.windows_ua_entry("nope.desktop")
+def test_patching_twice_is_a_no_op(browser):
+    d = install_extension(browser)
+    ah.patch_in_place()
+    assert ah.patch_in_place() == [(d, "already")]
+    assert (ah.BACKUPS / "3.4.0/background.js").read_text() == STOCK    # backup stays the original
 
 
-def test_status_reports_hosts_and_mode(home, monkeypatch):
-    monkeypatch.setattr(ah, "running_without_windows_ua", lambda b, proc="/proc": False)
+def test_an_unrecognised_version_is_left_untouched(browser):
+    d = install_extension(browser, "9.9.9", js="function other(){}")
+    assert ah.patch_in_place() == [(d, "unknown")]
+    assert (d / "background.js").read_text() == "function other(){}"
+
+
+def test_restore_puts_the_original_back(browser):
+    d = install_extension(browser)
+    ah.patch_in_place()
+    assert ah.restore_in_place() == [d]
+    assert (d / "background.js").read_text() == STOCK
+    assert ah.restore_in_place() == []
+
+
+def test_a_new_version_after_an_update_is_patched_too(browser):
+    old = install_extension(browser, "3.4.0")
+    ah.patch_in_place()
+    new = install_extension(browser, "3.5.0")
+    results = dict(ah.patch_in_place())
+    assert results == {old: "already", new: "patched"}
+
+
+def test_wait_covers_a_browser_that_is_still_unpacking(browser):
+    def unpack():
+        time.sleep(0.4)
+        install_extension(browser)
+    threading.Thread(target=unpack).start()
+    results = ah.patch_in_place(wait=5)
+    assert [state for _d, state in results] == ["patched"]
+
+
+def test_status_modes(browser):
     ah.install()
+    assert ah.status()["mode"] is None and ah.status()["installed"] == []
+    d = install_extension(browser)
+    assert ah.status()["mode"] is None and ah.status()["installed"] == [(d, "stock")]
+    ah.patch_in_place()
     st = ah.status()
-    assert st["hosts"] == [("Helium", True, "")] and st["mode"] is None
-    ah.windows_ua_entry("helium.desktop")
-    assert ah.status()["mode"] == "useragent" and ah.status()["entries"] == ["helium.desktop"]
+    assert st["mode"] == "inplace" and st["hosts"] == [("Helium", True, "")]
 
 
-def test_status_flags_a_broken_host(home):
+def test_status_notices_a_browser_that_disabled_the_extension(browser):
     ah.install()
-    manifest = home / "config/net.imput.helium/NativeMessagingHosts/com.apple.passwordmanager.json"
+    install_extension(browser)
+    ah.patch_in_place()
+    (browser / "Default/Preferences").write_text(json.dumps({"extensions": {"settings": {
+        ah.APPLE_EXTENSION_ID: {"disable_reasons": [2048]}}}}))
+    assert ah.status()["disabled"] == ["Helium/Default"]
+    sev, msg, hint = doctor.check_apple_extension()
+    assert sev == doctor.FAIL and "disabled" in msg and "unpacked" in hint
+
+
+def test_status_flags_a_broken_host(browser):
+    ah.install()
+    manifest = browser / "NativeMessagingHosts/com.apple.passwordmanager.json"
     data = json.loads(manifest.read_text())
-    data["path"] = str(home / "gone")
+    data["path"] = str(browser / "gone")
     manifest.write_text(json.dumps(data))
     assert ah.status()["hosts"][0][1] is False
     sev, msg, hint = doctor.check_apple_extension()
     assert sev == doctor.FAIL and "launcher" in msg and "icp setup" in hint
 
 
-def test_doctor_warns_until_a_mode_is_chosen(home, monkeypatch):
-    monkeypatch.setattr(ah, "running_without_windows_ua", lambda b, proc="/proc": False)
+def test_doctor_walks_through_the_states(browser):
     ah.install()
     sev, msg, hint = doctor.check_apple_extension()
-    assert sev == doctor.WARN and "useragent" in hint
-    ah.windows_ua_entry("helium.desktop")
+    assert sev == doctor.WARN and "not installed" in msg and "Chrome Web Store" in hint
+    install_extension(browser)
+    sev, msg, hint = doctor.check_apple_extension()
+    assert sev == doctor.WARN and "not patched" in msg and "icp setup" in hint
+    ah.patch_in_place()
     assert doctor.check_apple_extension()[0] == doctor.OK
+
+
+def test_unpacked_copy_is_a_separate_patched_folder(browser):
+    ah.install()
+    d = install_extension(browser)
+    out = ah.patch_unpacked_copy()
+    assert out == ah.UNPACKED and not (out / "_metadata").exists()
+    assert (out / "background.js").read_text() == STOCK.replace(ah.GATE, ah.PATCH)
+    assert (d / "background.js").read_text() == STOCK                       # store copy untouched
+    assert ah.status()["mode"] == "unpacked"
+
+
+def test_unpacked_copy_warns_after_an_apple_update(browser):
+    ah.install()
+    install_extension(browser, "3.4.0")
+    ah.patch_unpacked_copy()
+    install_extension(browser, "3.5.0")
+    sev, msg, hint = doctor.check_apple_extension()
+    assert sev == doctor.WARN and "3.4.0 -> 3.5.0" in msg and "unpacked" in hint
+
+
+def test_watcher_units_watch_every_profile_and_repatch(browser):
+    (browser / "Profile 1/Extensions").mkdir(parents=True)
+    install_extension(browser)
+    units = setup._extension_units()
+    path, service = units["icp-apple-extension.path"], units["icp-apple-extension.service"]
+    assert f"PathChanged={browser}/Default/Extensions\n" in path
+    assert f"PathChanged={browser}/Profile 1/Extensions\n" in path
+    assert f"PathChanged={browser}/Default/Extensions/{ah.APPLE_EXTENSION_ID}\n" in path
+    assert "apple-extension patch --wait" in service and "StartLimitIntervalSec=0" in service
 
 
 def test_autofill_panel_text():
     from icp.gui.model import autofill_summary
-    none = {"hosts": [], "mode": None}
-    assert autofill_summary(none)[0] == "No supported browser found"
+    host = [("Helium", True, "")]
+    assert autofill_summary({"hosts": [], "mode": None})[0] == "No supported browser found"
     broken = {"hosts": [("Helium", False, "launcher is missing")], "mode": None}
     assert "launcher is missing" in autofill_summary(broken)[1]
-    todo = {"hosts": [("Helium", True, "")], "mode": None}
-    assert "--apple-extension useragent" in autofill_summary(todo)[1]
-    ua = {"hosts": [("Helium", True, "")], "mode": "useragent"}
-    heading, body = autofill_summary(ua)
-    assert "ready" in heading and "Windows user agent" in body and "Helium" in body
-    patched = {"hosts": [("Helium", True, "")], "mode": "patched"}
-    assert "Load unpacked" in autofill_summary(patched)[1]
+    none = {"hosts": host, "installed": [], "mode": None, "disabled": []}
+    assert autofill_summary(none)[0] == "Install Apple's extension"
+    unpatched = {"hosts": host, "installed": [("x", "stock")], "mode": None, "disabled": []}
+    assert "icp setup" in autofill_summary(unpatched)[1]
+    ready = {"hosts": host, "installed": [("x", "patched")], "mode": "inplace", "disabled": []}
+    heading, body = autofill_summary(ready)
+    assert "ready" in heading and "pairing code" in body
+    off = dict(ready, disabled=["Helium/Default"])
+    assert "disabled" in autofill_summary(off)[0]
+    assert "Load unpacked" in autofill_summary(
+        {"hosts": host, "installed": [], "mode": "unpacked", "disabled": []})[1]
 
 
 def test_installing_a_binary_over_a_running_one_works(tmp_path):
     """`icp setup` used to crash with "Text file busy" while the agent was running."""
     import subprocess
-    import sys
     dest = tmp_path / "icp-agent"
     dest.write_bytes(b"#!/bin/sh\nexec sleep 30\n")
     dest.chmod(0o755)
@@ -129,67 +192,3 @@ def test_installing_a_binary_over_a_running_one_works(tmp_path):
     finally:
         running.kill()
         running.wait()
-
-
-def _fake_proc(tmp_path, procs):
-    root = tmp_path / "proc"
-    for pid, (comm, argv) in procs.items():
-        d = root / str(pid)
-        d.mkdir(parents=True)
-        (d / "comm").write_text(comm + "\n")
-        (d / "cmdline").write_bytes(b"\0".join(a.encode() for a in argv) + b"\0")
-    return str(root)
-
-
-def test_a_running_browser_without_the_flag_is_detected(tmp_path):
-    ua = "--user-agent=Mozilla/5.0 (Windows NT 10.0)"
-    old = _fake_proc(tmp_path / "a", {1: ("helium", ["/opt/helium/helium"]),
-                                     2: ("helium", ["/opt/helium/helium", "--type=renderer"])})
-    new = _fake_proc(tmp_path / "b", {1: ("helium", ["/opt/helium/helium", ua]),
-                                     2: ("helium", ["/opt/helium/helium", "--type=renderer"])})
-    none = _fake_proc(tmp_path / "c", {1: ("bash", ["bash"])})
-    assert ah.running_without_windows_ua("helium", proc=old) is True
-    assert ah.running_without_windows_ua("helium", proc=new) is False
-    assert ah.running_without_windows_ua("helium", proc=none) is False      # not running: fine
-
-
-def test_doctor_and_panel_tell_you_to_restart(home, monkeypatch):
-    ah.install()
-    ah.windows_ua_entry("helium.desktop")
-    monkeypatch.setattr(ah, "running_without_windows_ua", lambda b, proc="/proc": True)
-    sev, msg, hint = doctor.check_apple_extension()
-    assert sev == doctor.WARN and "still running" in msg and "Exit" in hint
-    from icp.gui.model import autofill_summary
-    heading, body = autofill_summary(ah.status())
-    assert heading == "Restart your browser to finish" and "patched" in body
-
-
-def test_detection_copes_with_a_rewritten_process_title(tmp_path):
-    """Chromium sets its title, so cmdline is one space-joined string with no NUL separators."""
-    root = tmp_path / "proc"
-    def proc(pid, line):
-        d = root / str(pid)
-        d.mkdir(parents=True)
-        (d / "comm").write_text("helium\n")
-        (d / "cmdline").write_bytes(line.encode() + b"\0\0")
-    proc(1, "/opt/helium/helium --user-agent=Mozilla/5.0 (Windows NT 10.0; Win64) Safari/537.36")
-    proc(2, "/opt/helium/helium --type=renderer --crashpad-handler-pid=7")
-    assert ah.running_without_windows_ua("helium", proc=str(root)) is False
-    (root / "1" / "cmdline").write_bytes(b"/opt/helium/helium\0\0")
-    assert ah.running_without_windows_ua("helium", proc=str(root)) is True
-
-
-def test_doctor_notices_when_apple_updates_the_extension(home, monkeypatch):
-    ah.install()
-    store = home / "config/net.imput.helium/Default/Extensions" / ah.APPLE_EXTENSION_ID / "3.5.0_0"
-    store.mkdir(parents=True)
-    (store / "manifest.json").write_text(json.dumps({"version": "3.5.0"}))
-    (store / "background.js").write_text("function checkForValidOS(){return 1}")
-    copy = hosts.DATA / "icp" / "apple-extension"
-    copy.mkdir(parents=True)
-    (copy / "manifest.json").write_text(json.dumps({"version": "3.4.0"}))
-    (copy / "background.js").write_text("x")
-    sev, msg, hint = doctor.check_apple_extension()
-    assert sev == doctor.WARN and "3.4.0 -> 3.5.0" in msg and "patched" in hint
-    (copy / "manifest.json").write_text(json.dumps({"version": "3.5.0"}))
-    assert doctor.check_apple_extension()[0] == doctor.OK
