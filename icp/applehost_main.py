@@ -22,6 +22,7 @@ from . import applehost as ah
 from .applehost import CMD, STATUS_NONE, STATUS_OK
 
 LOCKOUT_AFTER = 3          # wrong PINs
+MAX_FRAME = 1 << 20     # the largest message we accept from the browser
 LOCKOUT_SECONDS = 600
 CAPABILITIES = {
     "shouldUseBase64": False,
@@ -74,12 +75,39 @@ def _start_agent() -> None:
         time.sleep(0.1)
 
 
+NOTIFY_TITLE = "Pairing code for the iCloud Passwords extension"
+
+
+def _notify_dbus(title: str, body: str) -> bool:
+    """Send a desktop notification straight to the session bus from this process, so the text
+    never appears in any process's arguments (`/proc/<pid>/cmdline` is readable by every local
+    user). False when D-Bus or PyGObject is unavailable."""
+    try:
+        import gi
+        gi.require_version("Gio", "2.0")
+        from gi.repository import Gio, GLib
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        bus.call_sync(
+            "org.freedesktop.Notifications", "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications", "Notify",
+            GLib.Variant("(susssasa{sv}i)", (
+                "iCloud Passwords", 0, "dialog-password", title, body, [],
+                {"urgency": GLib.Variant("y", 2)}, 120_000)),
+            None, Gio.DBusCallFlags.NONE, 3000, None)
+        return True
+    except Exception:  # noqa: BLE001 - any failure just means "use the fallback"
+        return False
+
+
 def show_pin(pin: str) -> None:
+    """Show the 6-digit pairing PIN. It goes over D-Bus when possible; `notify-send` is only the
+    fallback because it takes the text as an argument that other local users can read."""
+    if _notify_dbus(NOTIFY_TITLE, pin):
+        return
     exe = shutil.which("notify-send")
     if exe:
         subprocess.run([exe, "-a", "iCloud Passwords", "-i", "dialog-password", "-u", "critical",
-                        "Pairing code for the iCloud Passwords extension", pin],
-                       timeout=5, check=False)
+                        NOTIFY_TITLE, pin], timeout=5, check=False)
 
 
 class Host:
@@ -115,6 +143,8 @@ class Host:
 
     # -- dispatch ---------------------------------------------------------------------------
     def handle(self, msg: dict) -> list[dict]:
+        if not isinstance(msg, dict):
+            return []                       # the pipe carries JSON; only objects are messages
         cmd = msg.get("cmd")
         if cmd == CMD["HELLO"]:
             self.session = None
@@ -134,6 +164,8 @@ class Host:
     def _pairing(self, msg: dict) -> list[dict]:
         try:
             m = json.loads(msg["msg"])
+            if not isinstance(m, dict):
+                raise ValueError("pairing message is not an object")
             if m.get("QID") == "m0":
                 if self._locked_out():
                     return [{"cmd": CMD["DISABLED"]}]
@@ -148,7 +180,7 @@ class Host:
                     self.failures.append(time.monotonic())
                     self.session = None
                 return [{"cmd": CMD["CHALLENGE_PIN"], "payload": {"QID": "m2", "PAKE": out}}]
-        except (ah.ProtocolError, KeyError, ValueError):
+        except (ah.ProtocolError, KeyError, ValueError, TypeError):
             self.session = None
         return []
 
@@ -161,7 +193,9 @@ class Host:
             return [{"cmd": CMD["RELOGIN"]}]
         try:
             q = s.open_smsg(json.loads(msg["payload"])["SMSG"])
-        except (ah.ProtocolError, KeyError, ValueError):
+            if not isinstance(q, dict):
+                raise ValueError("query is not an object")
+        except (ah.ProtocolError, KeyError, ValueError, TypeError):
             return [{"cmd": CMD["RELOGIN"]}]
         url = str(q.get("URL", ""))
         r = self._query({"cmd": "match", "domain": url})
@@ -188,12 +222,25 @@ def main() -> int:
         if len(head) < 4:
             return 0
         (n,) = struct.unpack("<I", head)
-        if n > 1 << 20:
+        if n > MAX_FRAME:
             return 1
-        for out in host.handle(json.loads(stdin.read(n))):
-            raw = json.dumps(out).encode()
-            stdout.write(struct.pack("<I", len(raw)) + raw)
-            stdout.flush()
+        body = stdin.read(n)
+        if len(body) < n:
+            return 0                        # the browser went away mid-message
+        try:
+            replies = host.handle(json.loads(body))
+        except ValueError:
+            continue                        # not JSON: ignore it, keep serving
+        except Exception as e:              # noqa: BLE001 - one bad message must not kill the host
+            print(f"icp apple host: {type(e).__name__} while handling a message", file=sys.stderr)
+            continue
+        try:
+            for out in replies:
+                raw = json.dumps(out).encode()
+                stdout.write(struct.pack("<I", len(raw)) + raw)
+                stdout.flush()
+        except BrokenPipeError:
+            return 0
 
 
 if __name__ == "__main__":

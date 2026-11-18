@@ -21,19 +21,16 @@ import stat
 import sys
 import time
 
-from . import hosts
+from . import hosts, paths
 
 APPLE_HOST_NAME = "com.apple.passwordmanager"
 APPLE_EXTENSION_ID = "pejdijmoenmkgeppbflobdenhhabjlaj"   # public Chrome Web Store ID
 
 
 def launcher() -> "hosts.Path":
-    d = hosts.DATA / "icp"
-    d.mkdir(parents=True, exist_ok=True)
-    p = d / "apple-host"
-    p.write_text(f'#!/bin/sh\nexec "{sys.executable}" -m icp.applehost_main\n')
-    p.chmod(p.stat().st_mode | stat.S_IXUSR)
-    return p
+    return paths.write_private(paths.private_dir(hosts.DATA / "icp") / "apple-host",
+                               f'#!/bin/sh\nexec "{sys.executable}" -m icp.applehost_main\n',
+                               executable=True)
 
 
 def install() -> list[tuple[str, "hosts.Path"]]:
@@ -121,7 +118,7 @@ def patch_in_place(wait: float = 0) -> list[tuple["hosts.Path", str]]:
             js = d / "background.js"
             text = js.read_text()
             keep = BACKUPS / (_version(d) or "unknown")
-            keep.mkdir(parents=True, exist_ok=True)
+            paths.private_dir(keep)
             if not (keep / "background.js").exists():
                 shutil.copy2(js, keep / "background.js")
             tmp = js.with_name("background.js.icp-new")

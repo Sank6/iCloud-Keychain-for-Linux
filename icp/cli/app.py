@@ -686,13 +686,13 @@ def _sync(args) -> int:
     Guarded by a non-blocking file lock so the periodic background trigger and a manual run
     can never overlap (a second sync exits immediately rather than racing on the vault)."""
     import fcntl
-    from ..paths import sync_lock_file
+    from ..paths import open_sync_lock
 
     from .. import ratelimit
     from ..auth.grandslam import TwoFactorUnavailable
 
     background = getattr(args, "background", False)
-    lock = open(sync_lock_file(), "w")
+    lock = open_sync_lock()
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:

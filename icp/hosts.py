@@ -6,10 +6,10 @@ from __future__ import annotations
 
 import json
 import os
-import stat
 import sys
 from pathlib import Path
 
+from . import paths
 from .const import EXTENSION_ID, GECKO_ID, HOST_NAME
 
 HOME = Path.home()
@@ -67,9 +67,10 @@ def _install_binary(built: Path, dest: Path) -> None:
     (copying over a running executable fails with "Text file busy"; the running process keeps its
     old inode and the next start picks up the new file)."""
     import shutil
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    paths.private_dir(dest.parent)
     tmp = dest.with_name(dest.name + ".new")
     shutil.copy2(built, tmp)
+    os.chmod(tmp, 0o700)
     os.replace(tmp, dest)
 
 
@@ -110,20 +111,17 @@ def write_launcher() -> Path:
     tiny sh wrapper around the Python host, which decrypts the vault per message (slow but needs
     nothing compiled). Both live in XDG data so they survive moving the checkout; re-run
     `icp setup` after changing Python environments."""
-    DATA.joinpath("icp").mkdir(parents=True, exist_ok=True)
-    d = DATA / "icp"
+    d = paths.private_dir(DATA / "icp")
     # the Rust agent when it has been built, else the Python one (same socket, same protocol)
     agent = f"{agent_path()}" if agent_path().exists() else f"{sys.executable} -m icp.agent"
-    (d / "agent-cmd").write_text(agent + "\n")
-    (d / "sync-cmd").write_text(f"{sys.executable} -m icp.cli.app sync --background\n")
-    (d / "login-cmd").write_text(f"{sys.executable} -m icp.cli.app login --gui\n")
-    (d / "gui-cmd").write_text(f"{sys.executable} -m icp.gui\n")
+    paths.write_private(d / "agent-cmd", agent + "\n")
+    paths.write_private(d / "sync-cmd", f"{sys.executable} -m icp.cli.app sync --background\n")
+    paths.write_private(d / "login-cmd", f"{sys.executable} -m icp.cli.app login --gui\n")
+    paths.write_private(d / "gui-cmd", f"{sys.executable} -m icp.gui\n")
     if shim_path().exists():
         return shim_path()
-    p = launcher_path()
-    p.write_text(f'#!/bin/sh\nexec "{sys.executable}" -m icp.vault.host\n')
-    p.chmod(p.stat().st_mode | stat.S_IXUSR)
-    return p
+    return paths.write_private(
+        launcher_path(), f'#!/bin/sh\nexec "{sys.executable}" -m icp.vault.host\n', executable=True)
 
 
 def chromium_manifest(launcher: Path, extra_ids=()) -> dict:

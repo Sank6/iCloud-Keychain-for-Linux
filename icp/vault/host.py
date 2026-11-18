@@ -64,17 +64,34 @@ def _to_unix(value) -> float:
     return 0.0
 
 
+_HOST_OK = re.compile(r"[a-z0-9_.-]+|\[[0-9a-f:.]+\]")
+
+
 def _normalize_host(value: str) -> str:
-    """Reduce a URL or host to a bare lowercase hostname (strip scheme/port/path/leading www)."""
-    v = value.strip().lower()
+    """Reduce a URL or host to a bare lowercase hostname, or "" when it cannot be trusted.
+
+    This decides whose passwords a page is offered, so it must read a URL exactly as a browser
+    does: `\\` counts as `/`, and `/`, `?` and `#` all end the authority (so `evil.com\\@a.com`
+    and `evil.com#@a.com` are `evil.com`, never `a.com`). A trailing dot, a port, userinfo and a
+    leading `www.` are dropped, internationalised names are compared as punycode (a look-alike
+    stays a different name) and anything with odd characters is "" and so never matches."""
+    v = value.strip().lower().replace("\\", "/")
     if "://" in v:
         v = v.split("://", 1)[1]
-    v = v.split("/", 1)[0].split("?", 1)[0]
-    v = v.split("@")[-1]          # strip userinfo
-    v = v.split(":", 1)[0]        # strip port
+    elif v.startswith("//"):
+        v = v[2:]
+    v = re.split(r"[/?#]", v, maxsplit=1)[0].rsplit("@", 1)[-1]
+    if v.startswith("["):                                  # IPv6 literal: keep as written
+        v = v.split("]", 1)[0] + "]" if "]" in v else ""
+    else:
+        v = v.split(":", 1)[0].rstrip(".")
+        try:
+            v = v.encode("idna").decode("ascii") if v and not v.isascii() else v
+        except UnicodeError:
+            return ""
     if v.startswith("www."):
         v = v[4:]
-    return v
+    return v if _HOST_OK.fullmatch(v) else ""
 
 
 def domains_match(page: str, stored: str) -> bool:
@@ -124,17 +141,19 @@ def _name_matches_host(page: str, name: str) -> bool:
     """Fallback for Passwords entries that decrypt as generic items with only a saved label.
 
     The iOS Passwords app can show a useful account name (for example "Cloudflare") even when
-    the decrypted item has no `srvr` host. Match only whole hostname labels so this stays much
-    narrower than substring matching.
+    the decrypted item has no `srvr` host. Only the site's own name may match: the label just
+    left of the public suffix (`amazon` in `www.amazon.co.uk`). A label anywhere else in the
+    host is attacker-chosen (`amazon.evil.com`, `evil.localhost`), so it never counts.
     """
-    labels = {label for label in _normalize_host(page).split(".") if label}
-    if not labels:
+    host = _normalize_host(page)
+    if not host or psl.is_ip(host) or psl.is_public_suffix(host) or "." not in host:
         return False
+    site = psl.registrable_domain(host).split(".")[0]
     tokens = {
         token for token in re.findall(r"[a-z0-9]+", name.lower())
         if len(token) >= 4 and token not in _GENERIC_NAME_TOKENS
     }
-    return bool(labels & tokens)
+    return site in tokens
 
 # `agrp` is the access group of the subsystem that wrote an item, and identifies its record type.
 _AGRP_LOGIN = {"com.apple.cfnetwork", "apple"}
@@ -437,7 +456,7 @@ def _maybe_trigger_sync() -> None:
         fails = int(st.get("failures", 0))
         if fails and time.time() - st.get("last_attempt", 0) < min(900 * 2 ** (fails - 1), 86400):
             return
-        attempt.touch()
+        attempt.touch(mode=0o600)
         subprocess.Popen(
             [sys.executable, "-m", "icp.cli.app", "sync", "--background"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
