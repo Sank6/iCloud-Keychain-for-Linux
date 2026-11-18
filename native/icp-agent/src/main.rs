@@ -134,9 +134,15 @@ fn load() -> Result<Loaded, String> {
 
 struct State { data: Option<Loaded>, last_used: f64 }
 
+/// Lock the agent state even if an earlier request panicked while holding it: one bad request must
+/// never leave every later request (and the idle lock) failing too.
+fn lock_state(state: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
+    state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn handle(state: &Mutex<State>, req: &Value) -> Value {
     let cmd = req.get("cmd").and_then(Value::as_str).unwrap_or("");
-    let mut st = state.lock().unwrap();
+    let mut st = lock_state(state);
     st.last_used = now();
     match cmd {
         "lock" => { st.data = None; return json!({"ok": true, "locked": true}); }
@@ -300,6 +306,28 @@ mod tests {
                    vec!["/v/bin/python", "-m", "icp.cli.app", "login", "--gui"]);
         assert!(login_cmd(None, None).is_empty());
     }
+    #[test]
+    fn a_poisoned_lock_does_not_kill_later_requests() {
+        let state = Mutex::new(State { data: None, last_used: 0.0 });
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = state.lock().unwrap();
+            panic!("a handler panicked while holding the state lock");
+        }));
+        assert!(state.is_poisoned());
+        let reply = handle(&state, &json!({"cmd": "ping"}));
+        assert_eq!(reply["ok"], json!(true));
+    }
+
+    #[test]
+    fn hostile_requests_get_an_error_not_a_panic() {
+        let state = Mutex::new(State { data: None, last_used: 0.0 });
+        for req in [json!(null), json!([]), json!("x"), json!(5), json!({"cmd": 5}),
+                    json!({"cmd": "match"}), json!({"cmd": "chose", "domain": 1, "username": []}),
+                    json!({"cmd": "search", "query": {}}), json!({"cmd": "x".repeat(100_000)})] {
+            let reply = handle(&state, &req);
+            assert!(reply.get("ok").is_some(), "request {req}");
+        }
+    }
 }
 
 // ---- framing & server ----------------------------------------------------------------------
@@ -326,7 +354,8 @@ fn client(state: Arc<Mutex<State>>, mut s: UnixStream) {
     if !peer_is_me(&s) { return; }
     while let Some(body) = read_frame(&mut s) {
         let resp = match serde_json::from_slice::<Value>(&body) {
-            Ok(req) => handle(&state, &req),
+            Ok(req) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handle(&state, &req)))
+                .unwrap_or_else(|_| json!({"ok": false, "error": "internal error"})),
             Err(_) => json!({"ok": false, "error": "bad json"}),
         };
         let out = serde_json::to_vec(&resp).unwrap_or_default();
@@ -340,7 +369,7 @@ fn main() {
     }
     let idle_lock: f64 = env::var("ICP_IDLE_LOCK").ok().and_then(|s| s.parse().ok()).unwrap_or(900.0);
     let state = Arc::new(Mutex::new(State { data: None, last_used: now() }));
-    if let Ok(l) = load() { state.lock().unwrap().data = Some(l); } // else start locked
+    if let Ok(l) = load() { lock_state(&state).data = Some(l); } // else start locked
 
     let sp = socket_path();
     let dir = sp.parent().unwrap().to_path_buf();
@@ -360,7 +389,7 @@ fn main() {
         let state = state.clone();
         thread::spawn(move || loop {
             thread::sleep(Duration::from_secs(30));
-            let mut st = state.lock().unwrap();
+            let mut st = lock_state(&state);
             if st.data.is_some() && idle_lock > 0.0 && now() - st.last_used > idle_lock { st.data = None; }
         });
         thread::spawn(|| loop { thread::sleep(Duration::from_secs(3600)); maybe_trigger_sync(); });

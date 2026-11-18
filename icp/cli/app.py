@@ -23,7 +23,6 @@ from ..auth.anisette import AnisetteError
 from ..auth.anisette_v3 import open_anisette
 from ..auth.device import Device
 from ..auth.gsa import GSAClient, GSAError
-from ..auth.session import SessionError
 from ..octagon import client as octagon
 from ..octagon.client import OctagonError
 from ..totp import generate as totp_generate
@@ -962,6 +961,11 @@ def cmd_apple_extension(args) -> int:
     return 0
 
 
+def cmd_uninstall(args) -> int:
+    from .. import uninstall
+    return uninstall.run(args)
+
+
 def cmd_setup(args) -> int:
     from .. import setup
     return setup.run(args)
@@ -1040,6 +1044,14 @@ def main(argv=None) -> int:
     up.add_argument("--extension-id", action="append",
                     help="also allow this extension id (e.g. an unpacked build with another id)")
     up.set_defaults(func=cmd_setup)
+
+    un = sub.add_parser("uninstall", help="remove everything `icp setup` installed")
+    un.add_argument("-y", "--yes", action="store_true", help="don't ask for confirmation")
+    un.add_argument("--dry-run", action="store_true", help="show what would be removed and stop")
+    un.add_argument("--purge", action="store_true",
+                    help="also delete the saved sign-in, vault and device identity (irreversible "
+                         "here; your passwords stay in iCloud)")
+    un.set_defaults(func=cmd_uninstall)
 
     ae = sub.add_parser("apple-extension",
                         help="patch, restore or report Apple's iCloud Passwords extension")

@@ -31,7 +31,7 @@ Version: $VER
 Section: utils
 Priority: optional
 Architecture: amd64
-Depends: python3 (>= 3.10), python3-requests, python3-srp, python3-cryptography, python3-nacl, python3-secretstorage, python3-gi, gir1.2-adw-1, gir1.2-gtk-4.0, gnome-keyring
+Depends: python3 (>= 3.11), python3-websockets, python3-requests, python3-srp, python3-cryptography, python3-nacl, python3-secretstorage, python3-gi, gir1.2-adw-1, gir1.2-gtk-4.0, gnome-keyring
 Maintainer: local build <nobody@localhost>
 Description: Unofficial iCloud Keychain client for Linux
  Autofill extension, native host (Rust agent + shim), keyring mirror and a GTK

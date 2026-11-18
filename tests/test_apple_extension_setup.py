@@ -1,6 +1,7 @@
 """Apple's own extension on Linux: patched in place, restored, re-patched, reported."""
 
 import json
+import os
 import threading
 import time
 
@@ -192,3 +193,39 @@ def test_installing_a_binary_over_a_running_one_works(tmp_path):
     finally:
         running.kill()
         running.wait()
+
+
+def test_a_symlinked_version_folder_is_never_followed(browser, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "background.js").write_text(STOCK)
+    (outside / "manifest.json").write_text(json.dumps({"version": "9.9"}))
+    base = browser / "Default/Extensions" / ah.APPLE_EXTENSION_ID
+    base.mkdir(parents=True)
+    os.symlink(outside, base / "9.9_0")
+    assert ah.extension_dirs() == [] and ah.patch_in_place() == []
+    assert (outside / "background.js").read_text() == STOCK
+    assert sorted(p.name for p in outside.iterdir()) == ["background.js", "manifest.json"]
+
+
+def test_a_symlinked_background_js_is_left_alone(browser, tmp_path):
+    d = install_extension(browser)
+    target = tmp_path / "elsewhere.js"
+    target.write_text(STOCK)
+    (d / "background.js").unlink()
+    os.symlink(target, d / "background.js")
+    assert ah.patch_in_place() == [(d, "unknown")]
+    assert target.read_text() == STOCK and (d / "background.js").is_symlink()
+    assert ah.restore_in_place() == []
+
+
+def test_a_symlinked_extension_root_is_not_followed(browser, tmp_path):
+    outside = tmp_path / "ext-elsewhere"
+    (outside / "3.4.0_0").mkdir(parents=True)
+    (outside / "3.4.0_0/background.js").write_text(STOCK)
+    (outside / "3.4.0_0/manifest.json").write_text(json.dumps({"version": "3.4.0"}))
+    base = browser / "Default/Extensions"
+    base.mkdir(parents=True, exist_ok=True)
+    os.symlink(outside, base / ah.APPLE_EXTENSION_ID)
+    assert ah.patch_in_place() == []
+    assert (outside / "3.4.0_0/background.js").read_text() == STOCK

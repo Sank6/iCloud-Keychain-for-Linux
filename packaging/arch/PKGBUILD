@@ -6,7 +6,7 @@ pkgrel=1
 pkgdesc="Unofficial iCloud Keychain client for Linux (autofill extension, agent, GTK app)"
 arch=(x86_64)
 license=(MIT)
-depends=(python python-requests python-srp python-cryptography python-pynacl python-secretstorage
+depends=(python python-requests python-srp python-cryptography python-pynacl python-secretstorage python-websockets
          python-gobject gtk4 libadwaita gnome-keyring)
 makedepends=(cargo python-build python-installer python-setuptools)
 source=("$pkgname::git+file://$PWD/../..")

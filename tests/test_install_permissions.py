@@ -80,3 +80,19 @@ def test_write_private_replaces_atomically_and_never_widens(home):
     paths.write_private(target, "two")
     assert target.read_text() == "two" and mode(target) == 0o600
     assert not list(home.glob("f.tmp"))
+
+
+def test_the_icp_command_is_linked_without_clobbering_anything(home, monkeypatch, tmp_path):
+    import sys
+    bin_dir = tmp_path / "venv/bin"
+    bin_dir.mkdir(parents=True)
+    script = bin_dir / "icp"
+    script.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(sys, "executable", str(bin_dir / "python3"))
+    monkeypatch.setattr(hosts, "CLI_LINK", tmp_path / "home/.local/bin/icp")
+    assert "->" in hosts.link_cli() and hosts.CLI_LINK.resolve() == script.resolve()
+    assert "already points" in hosts.link_cli()                        # idempotent
+    assert hosts.unlink_cli() and not hosts.CLI_LINK.exists()
+    hosts.CLI_LINK.write_text("a real file the user owns")             # never replaced or removed
+    assert "left" in hosts.link_cli() and not hosts.unlink_cli()
+    assert hosts.CLI_LINK.read_text() == "a real file the user owns"

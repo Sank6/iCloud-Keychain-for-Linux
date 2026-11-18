@@ -13,7 +13,8 @@ def cred(domain, title=""):
 
 STORE = CredentialStore([
     cred("example.com"), cred("paypal.com"), cred("amazon", "Amazon"), cred("localhost"),
-    cred("cloudflare", "Cloudflare"), cred("192.168.1.1"), cred("bücher.example"),
+    cred("cloudflare", "Cloudflare"), cred("192.168.1.1"), cred("xn--bcher-kva.example"),
+    cred("bücher.example", "Bücher Shop"), cred("", "Cloudflare Dashboard"),
 ])
 
 
@@ -25,7 +26,8 @@ def offered(page):
     "example.com.evil.com", "evil-example.com", "evilexample.com", "example.com@evil.com",
     "paypal.com.evil.com", "paypa1.com", "xn--pypal-4ve.com", "рaypal.com",     # Cyrillic p
     "amazon.evil.com", "amazon-login.com", "myamazon.com", "amazonaws.com",
-    "cloudflare.evil.com", "cloudflare.example.org", "evil.localhost",
+    "cloudflare.evil.com", "cloudflare.example.org", "evil.localhost", "shop.evil.com",
+    "buecher.example", "bücher.example",
     "192.168.1.10", "1.192.168.1.1", "evil.com.192.168.1.1",
     # parser confusion: a browser sends these to evil.com
     "https://evil.com\\@example.com/", "https://evil.com#@example.com/",
@@ -47,9 +49,9 @@ def test_phishing_pages_are_offered_nothing(page):
     ("https://example.com:8443/a?b=c#d", ["example.com"]),
     ("https://user:pw@example.com/", ["example.com"]),
     ("amazon.com", ["amazon"]), ("www.amazon.co.uk", ["amazon"]),
-    ("dash.cloudflare.com", ["cloudflare"]),
+    ("dash.cloudflare.com", ["", "cloudflare"]),            # a label-only entry has no domain
     ("localhost", ["localhost"]), ("192.168.1.1", ["192.168.1.1"]),
-    ("xn--bcher-kva.example", ["bücher.example"]),             # IDN compares as punycode
+    ("xn--bcher-kva.example", ["xn--bcher-kva.example"]),     # punycode stored by the browser
 ])
 def test_legitimate_pages_still_match(page, domains):
     assert offered(page) == domains

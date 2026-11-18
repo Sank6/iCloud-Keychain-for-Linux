@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gir1.2-gtk-4.0 gir1.2-adw-1 libgirepository1.0-dev libcairo2-dev pkg-config
+          python -m pip install -e '.[dev]'
+      - name: Tests
+        run: python -m pytest -q tests
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install ruff
+      - name: "ruff (unused and undefined names, syntax errors)"
+        run: ruff check icp tests
+      - name: shellcheck
+        run: shellcheck install.sh host/install.sh
+
+  rust:
+    name: Rust agent and shim
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --release
+        working-directory: native/icp-agent
+      - run: cargo build --release
+        working-directory: native/icp-shim

@@ -41,11 +41,27 @@ You will also need this repo. Clone it / download it as you wish.
 
 ## Install
 
-From the project folder:
+From the project folder (no root needed, safe to re-run):
+
+```
+./install.sh
+```
+
+It checks Python (3.11+), creates `.venv`, installs the dependencies, puts an `icp` command on your
+PATH (`~/.local/bin/icp`), registers the browser integration, installs the Passwords app and its
+launcher, and offers the 6-hourly background sync. `./install.sh -y` skips the questions and
+`./install.sh --no-timer` skips the sync timer. The GTK app needs the distribution's bindings:
+`sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1` (the command line and browser autofill
+work without them).
+
+Check everything at any time with `icp doctor`. Remove everything again with `icp uninstall`
+(your vault and sign-in are kept unless you add `--purge`; `--dry-run` shows what would go).
+
+By hand, instead of `install.sh`:
 
 ```
 python3 -m venv --system-site-packages .venv && .venv/bin/pip install -e .
-source .venv/bin/activate
+.venv/bin/icp setup
 ```
 
 ## Sign in

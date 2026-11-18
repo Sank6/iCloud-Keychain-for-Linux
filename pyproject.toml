@@ -6,14 +6,18 @@ build-backend = "setuptools.build_meta"
 name = "icp-linux"
 version = "0.0.1"
 description = "Register as an Apple device and sync iCloud Keychain on Linux"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "requests>=2.31",
     "srp>=1.0.20",
     "cryptography>=42.0",
     "pynacl>=1.5",
     "secretstorage>=3.3",
+    "websockets>=12",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
 
 [project.scripts]
 icp = "icp.cli.app:main"
@@ -23,3 +27,14 @@ include = ["icp*"]
 
 [tool.setuptools.package-data]
 icp = ["data/*.dat"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# Correctness only: syntax errors, unused/undefined names, redefinitions. No style churn.
+select = ["E9", "F"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

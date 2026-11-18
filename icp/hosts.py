@@ -15,6 +15,7 @@ from .const import EXTENSION_ID, GECKO_ID, HOST_NAME
 HOME = Path.home()
 CFG = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")
 DATA = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local/share")
+CLI_LINK = HOME / ".local/bin/icp"      # so `icp` works without activating the virtualenv
 
 # (label, browser profile dir whose existence means "installed", NativeMessagingHosts dir)
 CHROMIUM = [
@@ -102,6 +103,32 @@ def build_shim() -> bool:
         return False
     _install_binary(built, shim_path())
     return True
+
+
+def link_cli() -> str:
+    """Put `icp` on the PATH (~/.local/bin/icp -> this environment's script). Returns what was
+    done. An existing file or a link to something else is never replaced."""
+    script = Path(sys.executable).parent / "icp"
+    if not script.is_file():
+        return "skipped (no icp script next to this Python)"
+    link = CLI_LINK
+    if link.is_symlink() and link.resolve() == script.resolve():
+        return f"{link} already points here"
+    if link.exists() or link.is_symlink():
+        return f"left {link} alone (it already exists and points elsewhere)"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(script)
+    on_path = str(link.parent) in os.environ.get("PATH", "").split(os.pathsep)
+    return f"{link} -> {script}" + ("" if on_path else " (add ~/.local/bin to your PATH)")
+
+
+def unlink_cli() -> bool:
+    """Remove ~/.local/bin/icp, but only if it is a link to an `icp` script (never a real file)."""
+    link = CLI_LINK
+    if link.is_symlink() and link.resolve().name == "icp":
+        link.unlink()
+        return True
+    return False
 
 
 def write_launcher() -> Path:

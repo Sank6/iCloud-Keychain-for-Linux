@@ -6,7 +6,6 @@ sends the desktop notification. No secrets in either file."""
 
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 

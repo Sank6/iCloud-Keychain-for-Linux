@@ -16,12 +16,18 @@ from .doctor import OK, check_anisette
 UNIT_DIR = hosts.CFG / "systemd/user"
 
 
+# Seccomp-only hardening (no mount/user namespaces, so it also works where those are restricted).
+_SANDBOX = ("NoNewPrivileges=yes\nLockPersonality=yes\nRestrictRealtime=yes\n"
+            "RestrictSUIDSGID=yes\nSystemCallArchitectures=native\n")
+
+
 def _units() -> dict[str, str]:
     py = sys.executable
     return {
         "icp-sync.service": (
             "[Unit]\nDescription=iCloud Passwords sync\n\n"
-            f"[Service]\nType=oneshot\nExecStart={py} -m icp.cli.app sync --background\n"),
+            f"[Service]\nType=oneshot\nExecStart={py} -m icp.cli.app sync --background\n"
+            + _SANDBOX + "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\n"),
         "icp-sync.timer": (
             "[Unit]\nDescription=iCloud Passwords sync every 6 hours\n\n"
             "[Timer]\nOnBootSec=5min\nOnUnitActiveSec=6h\nRandomizedDelaySec=10min\n"
@@ -66,7 +72,8 @@ def _extension_units() -> dict[str, str]:
             "[Unit]\nDescription=Patch Apple's iCloud Passwords extension for Linux\n"
             "StartLimitIntervalSec=0\n\n"
             f"[Service]\nType=oneshot\nExecStart={sys.executable} -m icp.cli.app "
-            "apple-extension patch --wait 90 --quiet\n"),
+            "apple-extension patch --wait 90 --quiet\n"
+            + _SANDBOX + "RestrictAddressFamilies=AF_UNIX\n"),       # the patcher needs no network
     }
 
 
@@ -121,6 +128,7 @@ def run(args) -> int:
     if hosts.shim_source():
         ui.out("  Rust shim: " + ("built and installed" if hosts.build_shim() else
                "not built (needs cargo) - using the slower Python host"))
+    ui.out("  command: " + hosts.link_cli())
     done = hosts.install(extra_ids=args.extension_id or ())
     if not done:
         ui.warn("no supported browser profile found - open your browser once, then re-run")

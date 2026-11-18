@@ -44,14 +44,33 @@ impl Credential {
     }
 }
 
+/// Reduce a URL or host to a bare lowercase hostname, or "" when it cannot be trusted. This decides
+/// whose passwords a page is offered, so it reads a URL exactly as a browser does: `\` is `/`, and
+/// `/`, `?` and `#` all end the authority (`evil.com\@a.com` and `evil.com#@a.com` are
+/// `evil.com`, never `a.com`). A trailing dot, a port, userinfo and a leading `www.` are dropped.
+/// Anything but ASCII letters, digits, `.`, `-`, `_` (or a bracketed IPv6 literal) is refused, so a
+/// look-alike name can never match (browsers send punycode, `xn--...`, for international names).
+/// Mirrors `_normalize_host` in icp/vault/host.py.
 pub fn normalize_host(value: &str) -> String {
-    let mut v = value.trim().to_lowercase();
-    if let Some((_, rest)) = v.split_once("://") { v = rest.to_string(); }
-    v = v.split('/').next().unwrap_or("").split('?').next().unwrap_or("").to_string();
-    v = v.rsplit('@').next().unwrap_or("").to_string();
-    v = v.split(':').next().unwrap_or("").to_string();
-    if let Some(r) = v.strip_prefix("www.") { v = r.to_string(); }
-    v
+    let lowered = value.trim().to_lowercase().replace('\\', "/");
+    let rest = match lowered.split_once("://") {
+        Some((_, r)) => r,
+        None => lowered.strip_prefix("//").unwrap_or(&lowered),
+    };
+    let authority = rest.split(|c| c == '/' || c == '?' || c == '#').next().unwrap_or("");
+    let hostport = authority.rsplit('@').next().unwrap_or("");
+    let mut host = if hostport.starts_with('[') {
+        match hostport.find(']') { Some(i) => hostport[..=i].to_string(), None => return String::new() }
+    } else {
+        hostport.split(':').next().unwrap_or("").trim_end_matches('.').to_string()
+    };
+    if let Some(r) = host.strip_prefix("www.") { host = r.to_string(); }
+    let ok = if host.starts_with('[') {
+        host.len() > 2 && host[1..host.len() - 1].bytes().all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')
+    } else {
+        !host.is_empty() && host.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'_'))
+    };
+    if ok { host } else { String::new() }
 }
 
 pub fn domains_match(page: &str, stored: &str) -> bool {
@@ -76,10 +95,16 @@ fn is_credential(domain: &str, title: &str) -> bool {
 const GENERIC: [&str; 9] = ["account", "accounts", "admin", "app", "dashboard", "login", "password",
                             "passwords", "signin"];
 
+/// Fallback for entries that only have a saved label. Only the site's own name may match: the label
+/// just left of the public suffix (`amazon` in `www.amazon.co.uk`). A label anywhere else in the host
+/// is attacker-chosen (`amazon.evil.com`), so it never counts. Mirrors `_name_matches_host`.
 fn name_matches_host(page: &str, name: &str) -> bool {
     let host = normalize_host(page);
-    let labels: HashSet<&str> = host.split('.').filter(|l| !l.is_empty()).collect();
-    if labels.is_empty() { return false; }
+    if host.is_empty() || psl::is_ip(&host) || psl::is_public_suffix(&host) || !host.contains('.') {
+        return false;
+    }
+    let registrable = psl::registrable_domain(&host);
+    let site = registrable.split('.').next().unwrap_or("");
     let lower = name.to_lowercase();
     let generic: HashSet<&str> = GENERIC.iter().copied().chain(["sign", "web", "www"]).collect();
     // regex [a-z0-9]+ tokens
@@ -90,7 +115,7 @@ fn name_matches_host(page: &str, name: &str) -> bool {
         else if !cur.is_empty() { tokens.push(std::mem::take(&mut cur)); }
     }
     if !cur.is_empty() { tokens.push(cur); }
-    tokens.iter().any(|t| t.len() >= 4 && !generic.contains(t.as_str()) && labels.contains(t.as_str()))
+    tokens.iter().any(|t| t.len() >= 4 && !generic.contains(t.as_str()) && t == site)
 }
 
 const GROUPS: &[&[&str]] = &[
@@ -142,6 +167,12 @@ pub fn record_choice(host: &str, username: &str) {
     }
 }
 
+/// True for entries identified only by a name: no domain at all, or a bare one-word domain. An
+/// unusable domain (non-ASCII, junk) is NOT label-only, or a name inside it would match any site.
+fn label_only(raw_domain: &str, stored: &str) -> bool {
+    raw_domain.trim().is_empty() || (!stored.is_empty() && !stored.contains('.'))
+}
+
 pub fn match_creds<'a>(creds: &'a [Credential], page: &str) -> Vec<&'a Credential> {
     let mut ranked: Vec<(u8, &Credential)> = Vec::new();
     for c in creds {
@@ -151,7 +182,7 @@ pub fn match_creds<'a>(creds: &'a [Credential], page: &str) -> Vec<&'a Credentia
         } else {
             let stored = normalize_host(&c.domain);
             if related(page, &stored) { Some(2) }
-            else if !stored.contains('.') && name_matches_host(page, if c.title.is_empty() { &c.domain } else { &c.title }) { Some(3) }
+            else if label_only(&c.domain, &stored) && name_matches_host(page, if c.title.is_empty() { &c.domain } else { &c.title }) { Some(3) }
             else { None }
         };
         if let Some(r) = rank { ranked.push((r, c)); }
@@ -195,5 +226,73 @@ mod tests {
     fn non_logins_are_dropped() {
         assert!(!is_credential("PCS com.apple.foo", ""));
         assert!(is_credential("example.com", "Example"));
+    }
+
+    // ---- red team: the same table as tests/test_matching_security.py ------------------------
+    fn offered(page: &str) -> Vec<String> {
+        let mut named = cred("amazon", "me");
+        named.title = "Amazon".into();
+        let mut cf = cred("cloudflare", "me");
+        cf.title = "Cloudflare".into();
+        let mut shop = cred("b\u{fc}cher.example", "me");
+        shop.title = "B\u{fc}cher Shop".into();
+        let mut nameless = cred("", "me");
+        nameless.title = "Cloudflare Dashboard".into();
+        let v = vec![cred("example.com", "me"), cred("paypal.com", "me"), named, cred("localhost", "me"),
+                     cf, cred("192.168.1.1", "me"), cred("xn--bcher-kva.example", "me"), shop, nameless];
+        let mut out: Vec<String> = match_creds(&v, page).iter().map(|c| c.domain.clone()).collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn phishing_pages_are_offered_nothing() {
+        for page in [
+            "example.com.evil.com", "evil-example.com", "evilexample.com", "example.com@evil.com",
+            "paypal.com.evil.com", "paypa1.com", "xn--pypal-4ve.com", "\u{440}aypal.com",
+            "amazon.evil.com", "amazon-login.com", "myamazon.com", "amazonaws.com",
+            "cloudflare.evil.com", "cloudflare.example.org", "evil.localhost", "shop.evil.com",
+            "buecher.example", "b\u{fc}cher.example",
+            "192.168.1.10", "1.192.168.1.1", "evil.com.192.168.1.1",
+            "https://evil.com\\@example.com/", "https://evil.com#@example.com/",
+            "https://evil.com?@example.com", "https://user:pw@evil.com/example.com",
+            "https://evil.com/https://example.com", "https://evil.com/?u=example.com",
+            "//evil.com/@example.com", "https://example.com\0.evil.com", "https://exa mple.com",
+            "javascript:alert(1)", "", "   ", ".", "..", "[",
+        ] {
+            assert_eq!(offered(page), Vec::<String>::new(), "page {page:?}");
+        }
+    }
+
+    #[test]
+    fn legitimate_pages_still_match() {
+        for (page, want) in [
+            ("example.com", "example.com"), ("EXAMPLE.COM", "example.com"),
+            ("www.example.com", "example.com"), ("login.deep.example.com", "example.com"),
+            ("example.com.", "example.com"), ("https://example.com:8443/a?b=c#d", "example.com"),
+            ("https://user:pw@example.com/", "example.com"),
+            ("amazon.com", "amazon"), ("www.amazon.co.uk", "amazon"),
+            ("localhost", "localhost"),
+            ("192.168.1.1", "192.168.1.1"),
+        ] {
+            assert_eq!(offered(page), vec![want.to_string()], "page {page:?}");
+        }
+    }
+
+    #[test]
+    fn a_name_only_entry_matches_its_own_site_and_nothing_else() {
+        assert_eq!(offered("dash.cloudflare.com"), vec!["".to_string(), "cloudflare".to_string()]);
+        assert_eq!(offered("xn--bcher-kva.example"), vec!["xn--bcher-kva.example".to_string()]);
+    }
+
+    #[test]
+    fn normalize_host_reads_urls_like_a_browser() {
+        for (raw, host) in [
+            ("https://evil.com\\@example.com/", "evil.com"), ("https://evil.com#@example.com/", "evil.com"),
+            ("http://[::1]:8080/", "[::1]"), ("https://EXAMPLE.com:443/x", "example.com"),
+            ("example.com\0", ""), ("exa mple.com", ""), ("", ""), ("b\u{fc}cher.example", ""),
+        ] {
+            assert_eq!(normalize_host(raw), host, "raw {raw:?}");
+        }
     }
 }

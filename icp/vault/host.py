@@ -73,8 +73,9 @@ def _normalize_host(value: str) -> str:
     This decides whose passwords a page is offered, so it must read a URL exactly as a browser
     does: `\\` counts as `/`, and `/`, `?` and `#` all end the authority (so `evil.com\\@a.com`
     and `evil.com#@a.com` are `evil.com`, never `a.com`). A trailing dot, a port, userinfo and a
-    leading `www.` are dropped, internationalised names are compared as punycode (a look-alike
-    stays a different name) and anything with odd characters is "" and so never matches."""
+    leading `www.` are dropped. Anything but ASCII letters, digits, `.`, `-`, `_` (or a bracketed
+    IPv6 literal) is "": a look-alike name never matches (browsers send punycode, `xn--...`, for
+    international names). Mirrors `normalize_host` in native/icp-agent/src/matching.rs."""
     v = value.strip().lower().replace("\\", "/")
     if "://" in v:
         v = v.split("://", 1)[1]
@@ -85,10 +86,6 @@ def _normalize_host(value: str) -> str:
         v = v.split("]", 1)[0] + "]" if "]" in v else ""
     else:
         v = v.split(":", 1)[0].rstrip(".")
-        try:
-            v = v.encode("idna").decode("ascii") if v and not v.isascii() else v
-        except UnicodeError:
-            return ""
     if v.startswith("www."):
         v = v[4:]
     return v if _HOST_OK.fullmatch(v) else ""
@@ -135,6 +132,13 @@ _GENERIC_NAME_TOKENS = {
     "account", "accounts", "admin", "app", "dashboard", "login", "password", "passwords",
     "signin", "sign", "web", "www",
 }
+
+
+def _label_only(raw_domain: str, stored: str) -> bool:
+    """True for entries identified only by a name: no domain at all, or a bare one-word domain.
+    An unusable domain (non-ASCII, junk) is NOT label-only, or a name inside it would match any
+    site. Mirrors `label_only` in native/icp-agent/src/matching.rs."""
+    return not raw_domain.strip() or (bool(stored) and "." not in stored)
 
 
 def _name_matches_host(page: str, name: str) -> bool:
@@ -298,7 +302,7 @@ class CredentialStore:
             stored = _normalize_host(c.domain)
             if related.related(page_domain, stored):
                 return 2
-            if ("." not in stored) and _name_matches_host(page_domain, c.title or c.domain):
+            if _label_only(c.domain, stored) and _name_matches_host(page_domain, c.title or c.domain):
                 return 3
             return None
 

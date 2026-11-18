@@ -73,8 +73,10 @@ def extension_dirs() -> "list[hosts.Path]":
     found = []
     for _label, prof in profiles():
         base = prof / "Extensions" / APPLE_EXTENSION_ID
-        if base.is_dir():
-            found += [v for v in sorted(base.iterdir()) if (v / "background.js").is_file()]
+        if base.is_dir() and not base.is_symlink():
+            # A symlinked version folder could point anywhere: never follow it to edit a file
+            found += [v for v in sorted(base.iterdir())
+                      if not v.is_symlink() and (v / "background.js").is_file()]
     return found
 
 
@@ -92,8 +94,11 @@ def _version(folder) -> str | None:
 
 def file_state(folder) -> str:
     """"patched", "stock" (gate found exactly once, untouched) or "unknown" (another version)."""
+    js = hosts.Path(folder) / "background.js"
     try:
-        text = (hosts.Path(folder) / "background.js").read_text()
+        if js.is_symlink():
+            return "unknown"            # not a file the browser unpacked: leave it alone
+        text = js.read_text()
     except OSError:
         return "unknown"
     if PATCH in text:

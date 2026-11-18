@@ -68,3 +68,37 @@ def test_every_module_has_a_docstring():
         if not (module.__doc__ or "").strip() and not name.endswith("__init__"):
             missing.append(name)
     assert not missing, f"modules without a docstring: {missing}"
+
+
+def _unused_imports(path: Path) -> list[str]:
+    import ast
+    src = path.read_text()
+    tree = ast.parse(src)
+    lines = src.splitlines()
+    imported = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                imported[(a.asname or a.name).split(".")[0]] = node.lineno
+        elif isinstance(node, ast.ImportFrom) and node.module != "__future__":
+            for a in node.names:
+                imported[a.asname or a.name] = node.lineno
+    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    exported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets):
+            exported = {e.value for e in node.value.elts if isinstance(e, ast.Constant)}
+    return [name for name, line in imported.items()
+            if name not in used and name not in exported and "noqa" not in lines[line - 1]]
+
+
+def test_no_unused_imports():
+    found = {}
+    for path in sorted(ROOT.rglob("*.py")) + sorted((ROOT.parent / "tests").glob("*.py")):
+        if path.name == "__init__.py":
+            continue
+        unused = _unused_imports(path)
+        if unused:
+            found[str(path.relative_to(ROOT.parent))] = unused
+    assert not found, f"unused imports: {found}"

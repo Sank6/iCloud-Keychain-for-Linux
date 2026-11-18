@@ -4,7 +4,7 @@ build:
 	cd native/icp-agent && cargo build --release
 	cd native/icp-shim && cargo build --release
 test:
-	.venv/bin/python -m unittest discover -s tests -q
+	.venv/bin/python -m pytest -q tests
 	cd native/icp-agent && cargo test --release
 install: build
 	.venv/bin/icp setup
