@@ -168,6 +168,13 @@ def running_without_windows_ua(binary: str, proc="/proc") -> bool:
     return bool(mains) and not any(b" --user-agent=" in line for line in mains)
 
 
+def _manifest_version(folder) -> str | None:
+    try:
+        return json.loads((hosts.Path(folder) / "manifest.json").read_text()).get("version")
+    except (OSError, ValueError):
+        return None
+
+
 def status() -> dict:
     """Where the Apple-extension integration stands (no network, nothing written):
     {"hosts": [(browser, ok, problem)], "mode": "useragent"|"patched"|None,
@@ -197,9 +204,13 @@ def status() -> dict:
              if (b := exec_binary(did)) and running_without_windows_ua(b)]
     patched = hosts.DATA / "icp" / "apple-extension"
     patched_ok = patched if (patched / "background.js").exists() else None
+    store = find_installed()
+    store_v, copy_v = _manifest_version(store) if store else None, _manifest_version(patched)
+    outdated = bool(patched_ok and store_v and copy_v and store_v != copy_v)
     return {"hosts": out_hosts,
             "mode": "useragent" if entries else ("patched" if patched_ok else None),
-            "entries": entries, "running_without_ua": stale, "patched_copy": patched_ok, "store_extension": find_installed()}
+            "entries": entries, "running_without_ua": stale, "patched_copy": patched_ok,
+            "store_extension": store, "patched_outdated": (copy_v, store_v) if outdated else None}
 
 
 def desktop_ids_for_detected() -> list[tuple[str, str]]:

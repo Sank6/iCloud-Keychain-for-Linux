@@ -106,9 +106,11 @@ icp setup --apple-extension patched      # a local patched copy; the browser kee
 ```
 
 - `useragent` rewrites the browser's launcher so it starts with `--user-agent=...Windows...`. The
-  store extension keeps auto-updating; every site in that browser sees a Windows user agent. A
-  browser that is already running ignores the flag, so quit it completely first.
-  `icp setup --apple-extension off` puts the original launcher back.
+  store extension keeps auto-updating, but every site in that browser sees a Windows user agent
+  while the browser's other signals (client hints, `navigator.platform`) still say Linux, which
+  some sites' bot detection flags. A browser that is already running ignores the flag, so quit it
+  completely first. `icp setup --apple-extension off` puts the original launcher back.
+  **Prefer `patched` for a daily browser.**
 - `patched` copies your *own* installed extension and changes one function (its OS check). Load it
   with **Developer mode -> Load unpacked** and turn the store copy off; re-run after Apple updates it.
 

@@ -205,6 +205,11 @@ def check_apple_extension():
         return WARN, ("Apple's iCloud Passwords extension host is registered, but the extension "
                       "refuses to start on Linux"), \
             "run `icp setup --apple-extension useragent` (or `patched`)"
+    if st["mode"] == "patched" and st["patched_outdated"]:
+        have, new = st["patched_outdated"]
+        return WARN, (f"Apple updated the iCloud Passwords extension ({have} -> {new}); your "
+                      "patched copy is still the old one"), \
+            "run `icp setup --apple-extension patched`, then reload it in the browser's extensions page"
     if st["mode"] == "useragent" and st["running_without_ua"]:
         return WARN, ("your browser is still running from before the Windows user agent was set "
                       "up, so Apple's extension keeps refusing to start"), \

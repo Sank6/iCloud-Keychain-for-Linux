@@ -177,3 +177,19 @@ def test_detection_copes_with_a_rewritten_process_title(tmp_path):
     assert ah.running_without_windows_ua("helium", proc=str(root)) is False
     (root / "1" / "cmdline").write_bytes(b"/opt/helium/helium\0\0")
     assert ah.running_without_windows_ua("helium", proc=str(root)) is True
+
+
+def test_doctor_notices_when_apple_updates_the_extension(home, monkeypatch):
+    ah.install()
+    store = home / "config/net.imput.helium/Default/Extensions" / ah.APPLE_EXTENSION_ID / "3.5.0_0"
+    store.mkdir(parents=True)
+    (store / "manifest.json").write_text(json.dumps({"version": "3.5.0"}))
+    (store / "background.js").write_text("function checkForValidOS(){return 1}")
+    copy = hosts.DATA / "icp" / "apple-extension"
+    copy.mkdir(parents=True)
+    (copy / "manifest.json").write_text(json.dumps({"version": "3.4.0"}))
+    (copy / "background.js").write_text("x")
+    sev, msg, hint = doctor.check_apple_extension()
+    assert sev == doctor.WARN and "3.4.0 -> 3.5.0" in msg and "patched" in hint
+    (copy / "manifest.json").write_text(json.dumps({"version": "3.5.0"}))
+    assert doctor.check_apple_extension()[0] == doctor.OK
