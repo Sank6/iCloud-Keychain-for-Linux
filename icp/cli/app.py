@@ -18,6 +18,7 @@ import subprocess
 from . import ui
 from .. import diag
 from ..auth import grandslam as auth, icloud, session
+from ..errors import AppleError
 from ..auth.anisette import AnisetteError
 from ..auth.anisette_v3 import open_anisette
 from ..auth.device import Device
@@ -1064,7 +1065,7 @@ def main(argv=None) -> int:
     except KeyboardInterrupt:
         ui.err("aborted")
         return 130
-    except SessionError as e:
+    except AppleError as e:     # SessionError, DeviceError, AnisetteError...: explained, no traceback
         ui.err(str(e))
         return 1
 

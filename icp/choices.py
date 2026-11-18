@@ -7,6 +7,7 @@ import hashlib
 import json
 
 from . import paths, psl
+from . import jsonfile
 
 
 def _file():
@@ -22,10 +23,7 @@ def _tag(username: str) -> str:
 
 
 def _load() -> dict:
-    try:
-        return json.loads(_file().read_text())
-    except (OSError, ValueError):
-        return {}
+    return jsonfile.read_object(_file())
 
 
 def record(host: str, username: str) -> None:

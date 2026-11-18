@@ -26,10 +26,11 @@ def load() -> dict:
     f = paths.config_dir() / "config.toml"
     try:
         with open(f, "rb") as fh:
-            return tomllib.load(fh)
+            data = tomllib.load(fh)
+        return data if isinstance(data, dict) else {}
     except FileNotFoundError:
         return {}
-    except (OSError, tomllib.TOMLDecodeError) as e:
+    except (OSError, ValueError, RecursionError) as e:       # incl. TOML errors and bad UTF-8
         logger.warning("ignoring unreadable %s: %s", f, e)
         return {}
 

@@ -11,6 +11,7 @@ import shutil
 import subprocess
 
 from . import paths
+from . import jsonfile
 
 NOTIFY_AFTER = 3  # consecutive failures before a desktop notification
 
@@ -20,11 +21,7 @@ def status_file():
 
 
 def read() -> dict:
-    try:
-        data = json.loads(status_file().read_text())
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    return jsonfile.read_object(status_file())
 
 
 def explain(message: str) -> str:

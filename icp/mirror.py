@@ -14,6 +14,7 @@ import os
 from dataclasses import dataclass
 
 from . import config, keyring, paths
+from . import jsonfile
 
 logger = logging.getLogger(__name__)
 
@@ -106,10 +107,8 @@ def _state_file():
 
 
 def _last_fingerprint() -> str:
-    try:
-        return json.loads(_state_file().read_text()).get("fingerprint", "")
-    except (OSError, ValueError):
-        return ""
+    value = jsonfile.read_object(_state_file()).get("fingerprint", "")
+    return value if isinstance(value, str) else ""
 
 
 def _remember(fp: str) -> None:

@@ -25,6 +25,7 @@ import random
 import time
 
 from . import paths
+from . import jsonfile
 
 MIN_INTERVAL = int(os.environ.get("ICP_MIN_SYNC_INTERVAL", "300"))   # 5 min
 BACKOFF_BASE = 300                                                    # first failure: 5 min
@@ -41,11 +42,7 @@ def _file():
 
 
 def load() -> dict:
-    try:
-        data = json.loads(_file().read_text())
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    return jsonfile.read_object(_file())
 
 
 def _write(path, data: dict) -> None:
