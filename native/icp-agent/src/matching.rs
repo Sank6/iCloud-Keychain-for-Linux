@@ -83,6 +83,10 @@ pub fn domains_match(page: &str, stored: &str) -> bool {
     shorter.map_or(false, |sh| !psl::is_public_suffix(sh))
 }
 
+/// Wi-Fi network passwords sync as generic items whose service is "AirPort" and whose account and
+/// label are the network's name: never the login of a website. Mirrors `is_wifi_password`.
+fn is_wifi_password(domain: &str) -> bool { domain.trim().eq_ignore_ascii_case("airport") }
+
 fn is_credential(domain: &str, title: &str) -> bool {
     for tag in [domain, title] {
         let t = tag.trim().to_lowercase();
@@ -177,6 +181,7 @@ pub fn match_creds<'a>(creds: &'a [Credential], page: &str) -> Vec<&'a Credentia
     let mut ranked: Vec<(u8, &Credential)> = Vec::new();
     for c in creds {
         if !is_credential(&c.domain, &c.title) { continue; }
+        if is_wifi_password(&c.domain) { continue; }   // a name like "Office Guest" must not match office.com
         let rank = if domains_match(page, &c.domain) {
             Some(if normalize_host(page) == normalize_host(&c.domain) { 0 } else { 1 })
         } else {
@@ -283,6 +288,16 @@ mod tests {
     fn a_name_only_entry_matches_its_own_site_and_nothing_else() {
         assert_eq!(offered("dash.cloudflare.com"), vec!["".to_string(), "cloudflare".to_string()]);
         assert_eq!(offered("xn--bcher-kva.example"), vec!["xn--bcher-kva.example".to_string()]);
+    }
+
+    #[test]
+    fn wifi_passwords_never_match_a_page() {
+        let wifi = |name: &str| { let mut c = cred("AirPort", name); c.title = name.into(); c };
+        let v = vec![wifi("Home-WiFi"), wifi("Office Guest")];
+        for page in ["wifi.example.com", "home.example.com", "guest.example.com", "office.com",
+                     "airport", "airport.example.com"] {
+            assert!(match_creds(&v, page).is_empty(), "page {page:?}");
+        }
     }
 
     #[test]

@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 import requests
 
-from .. import config, const
+from .. import config
 from ..errors import AppleError
 
 logger = logging.getLogger(__name__)
@@ -109,12 +109,9 @@ class Anisette:
 
     @property
     def client_info(self) -> str:
-        """The X-Mme-Client-Info claimed to Apple: the user's override, else Android for a
-        loopback server (our Docker image runs Apple's Android libraries but reports a Mac),
-        else whatever the server reports."""
-        return config.client_info() or (
-            const.ANDROID_CLIENT_INFO if config.is_loopback(self.url)
-            else self._identity()["client_info"])
+        """The X-Mme-Client-Info claimed to Apple: the user's override, else whatever the server
+        reports for itself (Apple rejects a claim that contradicts where the data came from)."""
+        return config.client_info() or self._identity()["client_info"]
 
     @property
     def user_agent(self) -> str:

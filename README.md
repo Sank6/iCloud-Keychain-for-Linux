@@ -12,7 +12,7 @@ reverse engineering attempt and **is not affiliated with Apple in any way**.
 
 ## What you'll need
 
-An anisette server (see below for which ones Apple accepts). Tell `icp` where it is:
+An anisette server. Tell `icp` where it is (see below for which kinds Apple accepts):
 
 ```
 export ICP_ANISETTE_URL="https://your-anisette-server.example"
@@ -29,8 +29,14 @@ runs, and it blocks the shared identity of public v1 servers. What works:
   machine, and keeps it in `~/.config/icp/anisette-v3.json` (mode 0600). The server only runs
   Apple's ADI code for you; nobody shares your identity, and it never sees your Apple ID or
   password (it does see the anisette requests).
-- A **local** server that runs Apple's Windows/Mac code, such as
-  [Anisette-on-Wine](https://github.com/Sank6/Anisette-on-Wine): nothing leaves your machine.
+- A **local** server that runs Apple's Windows/Mac code, so nothing leaves your machine:
+  [anisette-rs](https://github.com/Sank6/anisette-rs) (**recommended**; native on Linux, uses
+  Windows iCloud headers) or [Anisette-on-Wine](https://github.com/Sank6/Anisette-on-Wine) (the
+  Windows iCloud libraries under Wine).
+
+[omnisette-server](https://github.com/SideStore/omnisette-server) and the `dadoum/anisette-v3-server`
+Docker image use the *Android* Apple Music libraries; Apple rejected that data when this was tested
+(Nov 2026), so they are not recommended.
 
 The server must answer `GET /` with anisette headers (v1) or speak the v3 protocol, and serve
 `/v3/client_info` (`client_info` and `user_agent`). `icp` picks the protocol itself: v1 for a

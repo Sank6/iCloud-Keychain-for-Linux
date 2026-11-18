@@ -128,6 +128,15 @@ def _is_credential(domain: str, title: str) -> bool:
     return True
 
 
+# Wi-Fi network passwords sync as generic items whose service (`svce`) is "AirPort" and whose
+# account and label are the network's name. They are not the login of any website.
+_WIFI_SERVICE = "airport"
+
+
+def is_wifi_password(domain: str) -> bool:
+    return (domain or "").strip().lower() == _WIFI_SERVICE
+
+
 _GENERIC_NAME_TOKENS = {
     "account", "accounts", "admin", "app", "dashboard", "login", "password", "passwords",
     "signin", "sign", "web", "www",
@@ -296,6 +305,10 @@ class CredentialStore:
     def match(self, page_domain: str) -> list[Credential]:
         def match_rank(c: Credential) -> int | None:
             if not _is_credential(c.domain, c.title):  # filters an older, unfiltered vault too
+                return None
+            # Never for a page: the label-only fallback below would offer "Home-WiFi" on any
+            # host with a label "home" or "wifi".
+            if is_wifi_password(c.domain):
                 return None
             if domains_match(page_domain, c.domain):
                 return 0 if _normalize_host(page_domain) == _normalize_host(c.domain) else 1

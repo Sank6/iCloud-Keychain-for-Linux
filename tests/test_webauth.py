@@ -35,6 +35,12 @@ def _session(**kw) -> WebAuthSession:
     return WebAuthSession("auth-test-frame", **kw)
 
 
+class TlsTests(unittest.TestCase):
+    def test_session_verifies_certificates(self):
+        # The session carries the Apple ID's SRP exchange, 2FA codes and session tokens.
+        self.assertIs(WebAuthSession("auth-test-frame").http.verify, True)
+
+
 class DerivePasswordKeyTests(unittest.TestCase):
     """Must match gsa.py's `_encrypt_password` exactly - same KDF, different transport."""
 

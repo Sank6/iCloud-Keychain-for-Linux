@@ -8,13 +8,6 @@ the fallbacks and fixed values.
 
 XCODE_VERSION = "27.0 (27A5218g)"
 
-# Claimed when the anisette data comes from Apple's Android libraries (our local Docker server
-# reports a MacBook; Apple rejects that mismatch).
-ANDROID_CLIENT_INFO = (
-    "<Pixel 7> <Android;14;UQ1A.240205.002> "
-    "<com.apple.AuthKit/1 (com.apple.akd/1.0)>"
-)
-
 # Claimed with real-Mac v3 anisette. Those servers report a 2016 MacBook Pro on macOS 10.12.6;
 # Apple refuses that for accounts with Advanced Data Protection (needs macOS >= 13.1) with
 # "Can't Use Your Apple ID on This Device" and sends no trusted-device 2FA code.

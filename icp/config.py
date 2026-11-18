@@ -2,8 +2,8 @@
 
 Recognised keys (all optional):
   anisette_url         where the anisette server listens (env ICP_ANISETTE_URL, CLI --anisette)
-  client_info          X-MMe-Client-Info to claim at sign-in (env ICP_CLIENT_INFO); default: Android for a
-                       loopback anisette server, otherwise whatever the server reports
+  client_info          X-MMe-Client-Info to claim at sign-in (env ICP_CLIENT_INFO); default: what the
+                       anisette server reports for itself (a v3 remote server claims a recent Mac)
   twofa_method         "trusted" (default: code shown on your Apple devices) or "sms" (ICP_2FA_METHOD)
   mirror_collection    Secret Service collection (label) for the logins mirror (ICP_MIRROR_COLLECTION)
 

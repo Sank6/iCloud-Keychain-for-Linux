@@ -1,6 +1,5 @@
 """Which client identity sign-in claims: it must match where the anisette data came from."""
 
-from icp import const
 from icp.auth import anisette as anisette_mod
 from icp.auth.anisette import Anisette
 
@@ -27,12 +26,14 @@ def _serve(monkeypatch):
     monkeypatch.setattr(anisette_mod.requests, "get", fake_get)
 
 
-def test_loopback_server_claims_android(monkeypatch):
+def test_a_local_server_claims_what_it_reports(monkeypatch):
+    """A local server (anisette-rs reports Windows, Anisette-on-Wine too) is claimed as it reports
+    itself; there is no special case for loopback."""
     monkeypatch.delenv("ICP_CLIENT_INFO", raising=False)
     _serve(monkeypatch)
     a = Anisette("http://127.0.0.1:6969")
     a.headers()
-    assert a.client_info == const.ANDROID_CLIENT_INFO
+    assert a.client_info == MAC
     assert a.user_agent == "akd/1.0 CFNetwork/811.5.4"
 
 
@@ -58,4 +59,4 @@ def test_service_identities_are_appended_to_the_claimed_platform(monkeypatch):
     _serve(monkeypatch)
     a = Anisette("http://127.0.0.1:6969")
     assert service_client_info(a, "com.apple.AOSKit/282 (com.apple.accountsd/113)") == \
-        "<Pixel 7> <Android;14;UQ1A.240205.002> <com.apple.AOSKit/282 (com.apple.accountsd/113)>"
+        f"{MAC.rsplit(' <com.apple.', 1)[0]} <com.apple.AOSKit/282 (com.apple.accountsd/113)>"
