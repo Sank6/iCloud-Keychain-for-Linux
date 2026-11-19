@@ -71,3 +71,16 @@ class NoPushInBackgroundTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StopAfterRepeatedFailures(unittest.TestCase):
+    def test_stops_after_five(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(
+                ratelimit.paths, "config_dir", return_value=__import__("pathlib").Path(d)):
+            st = {}
+            for _ in range(ratelimit.STOP_AFTER - 1):
+                ratelimit.record_failure(st, "x")
+            self.assertFalse(st.get("needs_login"))
+            ratelimit.record_failure(st, "x")
+            self.assertTrue(st["needs_login"])
+            self.assertFalse(ratelimit.may_sync(st, force=True, background=True)[0])

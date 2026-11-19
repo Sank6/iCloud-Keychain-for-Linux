@@ -16,7 +16,7 @@ function nativeRequest(payload) {
   });
 }
 
-const FORWARDED = new Set(["ping", "match", "totp"]);
+const FORWARDED = new Set(["ping", "match", "totp", "status", "open_app", "login", "search", "lock", "unlock", "chose"]);
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message && FORWARDED.has(message.cmd)) {

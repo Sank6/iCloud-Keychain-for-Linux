@@ -6,43 +6,75 @@ private, encrypted store on your machine. A browser extension fills them in for 
 Passwords app on a Mac or iPhone. Your Hide My Email addresses show up too. This project is a 
 reverse engineering attempt and **is not affiliated with Apple in any way**.
 
-> This is **untested** with Advanced Data Protection enabled. Any help with this will be appreciated -
-> let me know if you have any issues with ADP enabled (also lmk if it works). Please don't spam escrow attempts!
+> Advanced Data Protection works (signing in needs the code from one of your trusted devices; an
+> account with ADP refuses SMS codes and clients that claim an old macOS). Please don't spam
+> sign-in or escrow attempts: repeated failures make Apple's blocks last longer.
 
 ## What you'll need
 
-A configured Anisette server:
-
-- [anisette-rs](https://github.com/Sank6/anisette-rs) (**recommended**) runs natively on Linux -
-  uses Windows iCloud headers.
-- [Anisette-on-Wine](https://github.com/Sank6/Anisette-on-Wine) runs the Windows iCloud
-  libraries locally under Wine.
-- [omnisette-server](https://github.com/SideStore/omnisette-server) runs locally on Linux
-  (including via Docker) using libraries from the Android Apple Music APK, and can also be
-  hosted on a remote server.
-
-You can also use any trusted third-party anisette server.
+An anisette server. Tell `icp` where it is (see below for which kinds Apple accepts):
 
 ```
 export ICP_ANISETTE_URL="https://your-anisette-server.example"
 ```
 
-The configured URL must return anisette headers as JSON to a `GET` request. Its
-`/v3/client_info` endpoint must return `client_info` and `user_agent`.
+(or `--anisette URL`, or `anisette_url = "..."` in `~/.config/icp/config.toml`).
+
+**Which anisette server works.** Since October 2026 Apple refuses anisette generated with Apple's
+*Android* libraries (`-80045`), which is what the popular `dadoum/anisette-v3-server` Docker image
+runs, and it blocks the shared identity of public v1 servers. What works:
+
+- A **remote anisette v3 server backed by a real Mac** (e.g. `https://new.ani.sidestore.io`). With
+  a v3 server `icp` generates its own random device identity, registers it with Apple from this
+  machine, and keeps it in `~/.config/icp/anisette-v3.json` (mode 0600). The server only runs
+  Apple's ADI code for you; nobody shares your identity, and it never sees your Apple ID or
+  password (it does see the anisette requests).
+- A **local** server that runs Apple's Windows/Mac code, so nothing leaves your machine:
+  [anisette-rs](https://github.com/Sank6/anisette-rs) (**recommended**; native on Linux, uses
+  Windows iCloud headers) or [Anisette-on-Wine](https://github.com/Sank6/Anisette-on-Wine) (the
+  Windows iCloud libraries under Wine).
+
+[omnisette-server](https://github.com/SideStore/omnisette-server) and the `dadoum/anisette-v3-server`
+Docker image use the *Android* Apple Music libraries; Apple rejected that data when this was tested
+(Nov 2026), so they are not recommended.
+
+The server must answer `GET /` with anisette headers (v1) or speak the v3 protocol, and serve
+`/v3/client_info` (`client_info` and `user_agent`). `icp` picks the protocol itself: v1 for a
+loopback server, v3 for any other; force it with `anisette_protocol = "v1"|"v3"` (or
+`ICP_ANISETTE_PROTOCOL`). `icp doctor` checks the server.
+
+You will also need this repo. Clone it / download it as you wish.
 
 ## Install
 
-From the project folder:
+From the project folder (no root needed, safe to re-run):
 
 ```
-python3 -m venv .venv && .venv/bin/pip install -e .
-source .venv/bin/activate
+./install.sh
+```
+
+It checks Python (3.11+), creates `.venv`, installs the dependencies, puts an `icp` command on your
+PATH (`~/.local/bin/icp`), registers the browser integration, installs the Passwords app and its
+launcher, and offers the 6-hourly background sync. `./install.sh -y` skips the questions and
+`./install.sh --no-timer` skips the sync timer. The GTK app needs the distribution's bindings:
+`sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1` (the command line and browser autofill
+work without them).
+
+Check everything at any time with `icp doctor`. Remove everything again with `icp uninstall`
+(your vault and sign-in are kept unless you add `--purge`; `--dry-run` shows what would go).
+
+By hand, instead of `install.sh`:
+
+```
+python3 -m venv --system-site-packages .venv && .venv/bin/pip install -e .
+.venv/bin/icp setup
 ```
 
 ## Sign in
 
 ```
-icp login
+icp login --gui      # a sign-in window, no terminal needed (also in the Passwords app and the extension popup)
+icp login            # the same in a terminal
 ```
 
 This will walk you through the login: enter your Apple ID, password, and the 2FA code Apple
@@ -55,8 +87,10 @@ it can join your keychain.
   perfectly safe.
 - Your 2FA code and passcode are used immediately and **never saved**. Your password is kept
   **encrypted on your computer** (in your login keyring) so `icp` can stay signed in without
-  asking you again - it never leaves your machine. Your access tokens and passwords are stored
-  the same way.
+  asking you again - it never leaves your machine. Your Apple ID and password are a normal
+  Secret Service item (visible in Seahorse, removed by `icp logout`); tokens are stored encrypted.
+- Wrong password, a mistyped 2FA code and Cancel are handled in the window; nothing is sent to
+  Apple when you cancel.
 
 ## Browse your passwords
 
@@ -78,6 +112,34 @@ lists the current 6-digit code next to the login with the seconds left before it
 down live.
 
 ## Set up the browser extension
+
+Two options. Both fill from your local vault and neither contacts Apple.
+
+### Apple's own "iCloud Passwords" extension (Chromium browsers)
+
+Install **iCloud Passwords** from the Chrome Web Store, then run `icp setup`. That is all:
+
+- Apple's extension refuses to start on Linux (it only runs on macOS or a Windows user agent).
+  `icp setup` changes that one check in your own installed copy, **in place**: the original file is
+  saved first, nothing else is touched, and the browser keeps its real user agent, so sites see a
+  normal browser. Reload the extension on the extensions page (or restart the browser) once.
+- A systemd path unit watches your browser's extension folders and re-applies the patch whenever
+  the browser installs or updates the extension, so it keeps working. It also patches it as soon as
+  you install the extension if you ran `icp setup` first.
+- The first time (and after each browser start) the extension shows a 6-digit pairing code in a
+  desktop notification: type it into the extension's popup.
+- `icp apple-extension status|patch|restore` and `icp setup --apple-extension off` inspect, redo
+  or undo the patch. `icp doctor` and the Passwords app (**Browser autofill...**) show the state.
+
+Checked on Helium (Chromium 157): the browser runs the edited extension whether or not Developer
+mode is on. A browser that enforces extension content verification may disable an edited store
+extension; `icp doctor` says so, and `icp setup --apple-extension unpacked` builds a separate copy
+you load with Developer mode -> Load unpacked instead.
+
+The host is read-only; see `docs/apple-extension-protocol.md` and `SECURITY.md`. Apple's code is
+never shipped in this repo.
+
+### This project's own extension
 
 The `extension/` folder works in Chromium based browsers and Firefox.
 
@@ -147,7 +209,10 @@ show     browse and search your passwords and Hide My Email addresses
 sync     refresh your passwords now (--background for unattended runs, --force)
 status   last sync, next allowed sync, whether a login is needed (--json)
 diag     read-only diagnostics: zones, groups (counts only, no secrets)
-logout   sign out (use --wipe-device to also forget this device)
+logout   sign out: clears the session, the saved Apple ID and the keyring mirror
+         (--purge-vault, --wipe-device, --keep-mirror; --reset-keys after losing the keyring entry)
+doctor   checklist: anisette (and whether it is exposed on your LAN), keyring, sign-in, hosts
+mirror   copy logins into the keyring now (Seahorse); gui opens the Passwords window
 ```
 
 ## Credits

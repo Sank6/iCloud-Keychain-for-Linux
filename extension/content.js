@@ -193,10 +193,12 @@
 
   let tickers = [];
   let ticker = null;
+  let pickIndex = -1;
 
   function removeMenu() {
     if (ticker) { clearInterval(ticker); ticker = null; }
     tickers = [];
+    pickIndex = -1;
     const m = document.getElementById("__applepw_menu");
     if (m) m.remove();
   }
@@ -210,115 +212,244 @@
     });
   }
 
-  function codeLine(cred, style) {
-    const el = document.createElement("div");
-    Object.assign(el.style, style);
-    const paint = () => {
-      const left = Math.max(0, Math.round(cred.totp.expires - Date.now() / 1000));
-      el.textContent = `${cred.totp.code}  ${left}s`;
-      if (!left) refreshCode(cred);
-    };
-    paint();
-    tickers.push(paint);
-    return el;
+  // ---- Strong password (Apple's xxxxxx-xxxxxx-xxxxxx shape) ---------------------------------
+  function randomInt(n) {  // unbiased: reject values that would skew the modulo
+    const buf = new Uint32Array(1);
+    const limit = Math.floor(0x100000000 / n) * n;
+    do { crypto.getRandomValues(buf); } while (buf[0] >= limit);
+    return buf[0] % n;
   }
 
-  function subLine(text) {
-    const el = document.createElement("div");
-    el.textContent = text;
-    Object.assign(el.style, { fontSize: "11px", color: "#888" });
-    return el;
+  function strongPassword(maxLength) {
+    const lower = "abcdefghijkmnopqrstuvwxyz", upper = "ABCDEFGHJKLMNPQRSTUVWXYZ", digit = "0123456789";
+    const compact = maxLength > 0 && maxLength < 20;
+    const groups = compact ? 1 : 3, size = compact ? Math.max(8, maxLength) : 6;
+    const chars = [];
+    for (let i = 0; i < groups * size; i++) chars.push(lower[randomInt(lower.length)]);
+    chars[randomInt(chars.length)] = upper[randomInt(upper.length)];
+    let d;
+    do { d = randomInt(chars.length); } while (/[A-Z]/.test(chars[d]));
+    chars[d] = digit[randomInt(digit.length)];
+    let out = "";
+    for (let g = 0; g < groups; g++) out += (g ? "-" : "") + chars.slice(g * size, (g + 1) * size).join("");
+    return out;
   }
 
-  function menuRow(onPick) {
-    const row = document.createElement("div");
-    Object.assign(row.style, { padding: "8px 10px", cursor: "pointer", textAlign: "left" });
-    row.addEventListener("mouseenter", () => (row.style.background = "#f1f5ff"));
-    row.addEventListener("mouseleave", () => (row.style.background = "#fff"));
-    row.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      onPick();
-      removeMenu();
+  function isNewPasswordField(el) {
+    if (!looksLikePassword(el)) return false;
+    if ((el.autocomplete || "").toLowerCase() === "new-password") return true;
+    return within(el, FIELD_SEL).filter(looksLikePassword).length >= 2;
+  }
+
+  function useStrongPassword(anchor) {
+    const pw = strongPassword(anchor.maxLength);
+    within(anchor, FIELD_SEL).filter(looksLikePassword).forEach((f) => {
+      f.__applepwFilled = true;
+      setValue(f, pw);
     });
-    return row;
+    try { navigator.clipboard.writeText(pw).catch(() => {}); } catch (_) { /* best effort */ }
+    return pw;
+  }
+
+  // ---- Popover (closed shadow root so page CSS/JS can't touch it) ------------------------------
+  const POPOVER_CSS = `
+    :host { all: initial; }
+    .menu {
+      --bg: #fff; --fg: #1d1d1f; --muted: #86868b; --line: #e8e8ed; --hover: #f2f2f7; --accent: #0071e3;
+      box-sizing: border-box; background: var(--bg); color: var(--fg); border-radius: 12px;
+      border: .5px solid rgba(0,0,0,.14); box-shadow: 0 10px 34px rgba(0,0,0,.22);
+      font: 13px/1.3 -apple-system, system-ui, "Segoe UI", Ubuntu, sans-serif; padding: 6px;
+      overflow-y: auto; text-align: left;
+    }
+    @media (prefers-color-scheme: dark) {
+      .menu { --bg: #2c2c2e; --fg: #f5f5f7; --muted: #98989d; --line: #3a3a3c; --hover: #3a3a3c;
+              --accent: #0a84ff; border-color: rgba(255,255,255,.14); }
+    }
+    .head { display: flex; align-items: center; gap: 6px; padding: 4px 8px 6px; color: var(--muted);
+            font-size: 11px; font-weight: 600; letter-spacing: .02em; }
+    .head svg { width: 13px; height: 13px; flex: none; }
+    .warn { margin: 2px 4px 6px; padding: 6px 8px; border-radius: 8px; background: #fff4e5;
+            color: #8a4b00; font-size: 11px; }
+    .row { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 8px;
+           cursor: pointer; }
+    .row.sel, .row:hover { background: var(--accent); color: #fff; }
+    .row.sel .sub, .row:hover .sub, .row.sel .code, .row:hover .code { color: rgba(255,255,255,.85); }
+    .ava { width: 26px; height: 26px; flex: none; border-radius: 7px; background: var(--hover);
+           display: grid; place-items: center; font-weight: 600; color: var(--muted); text-transform: uppercase; }
+    .row.sel .ava, .row:hover .ava { background: rgba(255,255,255,.22); color: #fff; }
+    .meta { min-width: 0; flex: 1; }
+    .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+    .sub { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .code { color: var(--accent); font-variant-numeric: tabular-nums; letter-spacing: .08em; font-size: 11px; }
+    .big { font-size: 18px; letter-spacing: .14em; font-weight: 500; color: inherit; }
+    .sep { height: 1px; background: var(--line); margin: 4px 2px; }
+    .act { color: var(--accent); }
+    .row.sel .act, .row:hover .act { color: #fff; }
+  `;
+  const KEY_SVG = '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M10.5 1a4.5 4.5 0 0 0-4.2 6.1L1 12.4V15h3v-1.5h1.5V12H7l1.1-1.1A4.5 4.5 0 1 0 10.5 1Zm1.2 3.2a1.2 1.2 0 1 1 0 2.4 1.2 1.2 0 0 1 0-2.4Z"/></svg>';
+
+  function relRow(row, cls, text) {
+    const el = document.createElement("div");
+    el.className = cls;
+    el.textContent = text;
+    row.appendChild(el);
+    return el;
   }
 
   function showMenu(anchor, creds, aliases, codes) {
     removeMenu();
     aliases = aliases || [];
-    if (!creds.length && !aliases.length) return;
-    const rect = anchor.getBoundingClientRect();
-    const menu = document.createElement("div");
-    menu.id = "__applepw_menu";
-    Object.assign(menu.style, {
-      position: "fixed", zIndex: 2147483647,
-      top: `${rect.bottom + 2}px`, left: `${rect.left}px`,
-      minWidth: `${Math.max(rect.width, 220)}px`,
-      maxHeight: `${Math.max(160, window.innerHeight - rect.bottom - 12)}px`,
-      overflowY: "auto",
-      background: "#fff", color: "#111", textAlign: "left",
-      border: "1px solid #c7c7c7", borderRadius: "8px",
-      boxShadow: "0 6px 24px rgba(0,0,0,.18)", font: "13px -apple-system,system-ui,sans-serif",
-    });
-    function sectionHeader(text, extraStyle) {
-      const el = document.createElement("div");
-      el.textContent = text;
-      Object.assign(el.style, { padding: "6px 10px", color: "#666", fontSize: "11px" }, extraStyle);
-      menu.appendChild(el);
-    }
+    const strong = !codes && isNewPasswordField(anchor);
+    if (!creds.length && !aliases.length && !strong) return;
 
-    if (creds.length) {
-      sectionHeader(codes ? "Verification code" : "iCloud Passwords",
-                    { borderBottom: "1px solid #eee" });
-    }
-    for (const cred of creds) {
-      const row = menuRow(() => (codes ? fillCode(cred, anchor) : fill(cred, anchor)));
-      if (codes) {
-        row.appendChild(codeLine(cred, {
-          fontSize: "17px", letterSpacing: ".12em", fontVariantNumeric: "tabular-nums",
-        }));
-      }
-      const website = cred.domain || cred.title || "";
-      const name = document.createElement("div");
-      if (cred.username && website) {
-        const user = document.createElement("span");
-        user.textContent = cred.username;
-        const site = document.createElement("span");
-        site.textContent = ` (${website})`;
-        Object.assign(site.style, { fontSize: "11px", color: "#999" });
-        name.appendChild(user);
-        name.appendChild(site);
-      } else {
-        name.textContent = cred.username || website || "(no title)";
-      }
-      row.appendChild(name);
-      if (codes) {
-        menu.appendChild(row);
-        continue;
-      }
-      if (cred.totp) {
-        row.appendChild(codeLine(cred, { fontSize: "11px", color: "#0071e3" }));
-      }
-      // last_used is a real use time; mdat is only the record's write time.
-      const rel = relTime(cred.last_used || cred.mdat);
-      if (rel) row.appendChild(subLine(`Last used ${rel}`));
+    const rect = anchor.getBoundingClientRect();
+    const host = document.createElement("div");
+    host.id = "__applepw_menu";
+    Object.assign(host.style, {
+      position: "fixed", zIndex: 2147483647, top: `${rect.bottom + 4}px`, left: `${rect.left}px`,
+      width: `${Math.max(rect.width, 260)}px`,
+    });
+    const root = host.attachShadow({ mode: "closed" });
+    const style = document.createElement("style");
+    style.textContent = POPOVER_CSS;
+    const menu = document.createElement("div");
+    menu.className = "menu";
+    menu.style.maxHeight = `${Math.max(160, window.innerHeight - rect.bottom - 16)}px`;
+    root.append(style, menu);
+
+    const rows = [];  // pickable rows, for keyboard navigation
+    function addRow(row, onPick) {
+      row.classList.add("row");
+      row.addEventListener("mousedown", (e) => { e.preventDefault(); onPick(); removeMenu(); });
+      row.__pick = onPick;
+      rows.push(row);
       menu.appendChild(row);
     }
 
+    const head = document.createElement("div");
+    head.className = "head";
+    head.innerHTML = KEY_SVG;
+    head.appendChild(document.createTextNode(codes ? "Verification Code" : "Passwords"));
+    menu.appendChild(head);
+    if (location.protocol === "http:") {
+      const w = document.createElement("div");
+      w.className = "warn";
+      w.textContent = "This page is not secure. Your password could be seen by others.";
+      menu.appendChild(w);
+    }
+
+    for (const cred of creds) {
+      const row = document.createElement("div");
+      const website = cred.title || cred.domain || "";
+      const ava = document.createElement("div");
+      ava.className = "ava";
+      ava.textContent = (cred.username || website || "?").charAt(0);
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      row.append(ava, meta);
+      if (codes) {
+        const c = relRow(meta, "code big", "");
+        const paint = () => {
+          const left = Math.max(0, Math.round(cred.totp.expires - Date.now() / 1000));
+          c.textContent = `${cred.totp.code} \u00b7 ${left}s`;
+          if (!left) refreshCode(cred);
+        };
+        paint(); tickers.push(paint);
+        relRow(meta, "sub", cred.username ? `${cred.username} \u00b7 ${website}` : website);
+        addRow(row, () => fillCode(cred, anchor));
+        continue;
+      }
+      relRow(meta, "t", cred.username || website || "(no title)");
+      relRow(meta, "sub", cred.username ? website : "");
+      if (cred.totp) {
+        const c = relRow(meta, "code", "");
+        const paint = () => {
+          const left = Math.max(0, Math.round(cred.totp.expires - Date.now() / 1000));
+          c.textContent = `Code ${cred.totp.code} \u00b7 ${left}s`;
+          if (!left) refreshCode(cred);
+        };
+        paint(); tickers.push(paint);
+      }
+      addRow(row, () => { send({ cmd: "chose", domain: location.hostname, username: cred.username }); fill(cred, anchor); });
+    }
+
     if (aliases.length) {
-      sectionHeader("Hide My Email", { borderTop: creds.length ? "1px solid #eee" : "" });
+      const h = document.createElement("div");
+      h.className = "head";
+      h.textContent = "Hide My Email";
+      menu.appendChild(h);
       for (const alias of aliases) {
-        const row = menuRow(() => fillAlias(alias, anchor));
-        const name = document.createElement("div");
-        name.textContent = alias.address;
-        row.appendChild(name);
-        if (alias.label) row.appendChild(subLine(alias.label));
-        menu.appendChild(row);
+        const row = document.createElement("div");
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        relRow(meta, "t", alias.address);
+        if (alias.label) relRow(meta, "sub", alias.label);
+        row.appendChild(meta);
+        addRow(row, () => fillAlias(alias, anchor));
       }
     }
-    document.body.appendChild(menu);
+
+    if (!codes) {
+      menu.appendChild(Object.assign(document.createElement("div"), { className: "sep" }));
+      if (strong) {
+        const row = document.createElement("div");
+        relRow(row, "act", "Use Strong Password");
+        addRow(row, () => useStrongPassword(anchor));
+      }
+      const open = document.createElement("div");
+      relRow(open, "act", "Passwords\u2026");
+      addRow(open, () => send({ cmd: "open_app" }));
+    }
+
+    document.body.appendChild(host);
+    host.__rows = rows;
     if (tickers.length) ticker = setInterval(() => tickers.forEach((paint) => paint()), 1000);
   }
+
+  function showLocked(anchor, onUnlocked) {
+    removeMenu();
+    const rect = anchor.getBoundingClientRect();
+    const host = document.createElement("div");
+    host.id = "__applepw_menu";
+    Object.assign(host.style, { position: "fixed", zIndex: 2147483647, top: `${rect.bottom + 4}px`,
+                                left: `${rect.left}px`, width: `${Math.max(rect.width, 260)}px` });
+    const root = host.attachShadow({ mode: "closed" });
+    const style = document.createElement("style");
+    style.textContent = POPOVER_CSS;
+    const menu = document.createElement("div");
+    menu.className = "menu";
+    const head = document.createElement("div");
+    head.className = "head";
+    head.innerHTML = KEY_SVG;
+    head.appendChild(document.createTextNode("Passwords Locked"));
+    const row = document.createElement("div");
+    row.className = "row";
+    relRow(row, "act", "Unlock Passwords\u2026");
+    row.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      send({ cmd: "unlock" }).then((r) => { if (r && r.ok) { cache = null; onUnlocked(); } });
+      removeMenu();
+    });
+    row.__pick = () => row.dispatchEvent(new MouseEvent("mousedown"));
+    menu.append(head, row);
+    root.append(style, menu);
+    host.__rows = [row];
+    document.body.appendChild(host);
+  }
+
+  // Arrow keys / Enter / Escape drive the popover while it is open (capture: before the page).
+  document.addEventListener("keydown", (e) => {
+    const host = document.getElementById("__applepw_menu");
+    if (!host || !host.__rows || !host.__rows.length) return;
+    const rows = host.__rows;
+    const paintSel = () => rows.forEach((r, i) => r.classList.toggle("sel", i === pickIndex));
+    if (e.key === "ArrowDown") { pickIndex = (pickIndex + 1) % rows.length; paintSel(); }
+    else if (e.key === "ArrowUp") { pickIndex = (pickIndex - 1 + rows.length) % rows.length; paintSel(); }
+    else if (e.key === "Enter" && pickIndex >= 0) { rows[pickIndex].__pick(); removeMenu(); }
+    else if (e.key === "Escape") { removeMenu(); return; }
+    else return;
+    e.preventDefault(); e.stopPropagation();
+  }, true);
 
   // A username field's typed value narrows the list; a password field (or empty value)
   // never filters.
@@ -358,6 +489,7 @@
   function getMatches() {
     if (cache) return Promise.resolve(cache);
     return send({ cmd: "match", domain: location.hostname }).then((resp) => {
+      if (resp && resp.locked) return { locked: true, credentials: [], aliases: [] };
       cache = resp && resp.ok
         ? { credentials: resp.credentials || [], aliases: resp.aliases || [] }
         : EMPTY_MATCHES;
@@ -368,10 +500,11 @@
   function attach(field) {
     if (field.__applepw) return;
     field.__applepw = true;
-    const open = () => getMatches().then(({ credentials, aliases }) => {
+    const open = (e) => { if (e && e.isTrusted === false) return; return getMatches().then(({ locked, credentials, aliases }) => {
+      if (locked) return showLocked(field, () => open());
       if (isOtpField(field)) return showMenu(field, credentials.filter((c) => c.totp), [], true);
       showMenu(field, filterCreds(credentials, field), filterAliases(aliases, field));
-    });
+    }); };
     field.addEventListener("focus", open);
     field.addEventListener("click", open);
     field.addEventListener("input", () => {
@@ -384,9 +517,17 @@
     const fields = deepQueryAll(FIELD_SEL).filter(visible);
     const passwords = fields.filter(looksLikePassword);
     passwords.forEach(attach);
+    // A text field is only a sign-in field if it is a code box, is named like a username, or sits
+    // in the same form as a password field. (A search box next to a login form is neither.)
+    const NOT_LOGIN = /search|query|zip|postal|coupon|promo|captcha|newsletter|subscribe|\bq\b/;
+    const sameScope = (el) => passwords.some((p) => (p.form || null) === (el.form || null)
+      && (p.form || p.getRootNode() === el.getRootNode()));
     fields.forEach((el) => {
       if (looksLikePassword(el)) return;
-      if (isOtpField(el) || passwords.length || looksLikeUsername(el)) attach(el);
+      if (isOtpField(el)) return attach(el);
+      const words = fieldWords(el);
+      if (el.type === "search" || NOT_LOGIN.test(words)) return;
+      if (looksLikeUsername(el) || sameScope(el)) attach(el);
     });
   }
 

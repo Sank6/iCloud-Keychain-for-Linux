@@ -3,3 +3,4 @@ srp>=1.0.20
 cryptography>=42.0
 pynacl>=1.5
 secretstorage>=3.3
+websockets>=12

@@ -4,6 +4,7 @@ from collections import Counter
 import json
 import logging
 import plistlib
+import re
 import time
 from pathlib import Path
 
@@ -23,6 +24,25 @@ _SECRET_HINTS = (
 _SECRET_KEYS = {"fn", "ln"}
 
 
+_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_LONG_NUMBER = re.compile(r"(?<![\w.])\d{9,}(?![\w.])")      # account ids (dsid) and the like
+KEEP_LOGS = 3                                                   # debug transcripts kept on disk
+
+
+def scrub(text: str) -> str:
+    """Mask identifiers wherever they appear inside free text: e-mail addresses and long numbers.
+    The key-based `redact` cannot see them in a URL, an error message or a note."""
+    return _LONG_NUMBER.sub("<number>", _EMAIL.sub("<email>", text))
+
+
+class _ScrubFilter(logging.Filter):
+    """Apply `scrub` to every line the debug handler writes, not only to dumped responses."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg, record.args = scrub(record.getMessage()), ()
+        return True
+
+
 def redact(value, key: str = ""):
     if isinstance(value, (bytes, bytearray)):
         return f"<bytes:{len(value)}>"
@@ -37,7 +57,7 @@ def redact(value, key: str = ""):
             return f"<redacted:{len(value)}>"
         if len(value) > 80:
             return f"<str:{len(value)}>"
-        return value
+        return scrub(value)
     if sensitive and value is not None:
         return f"<redacted:{type(value).__name__}>"
     return value
@@ -45,9 +65,14 @@ def redact(value, key: str = ""):
 
 def start() -> Path:
     """Attach a DEBUG file handler; return the log path."""
-    path = paths.config_dir() / f"debug-{int(time.time())}.log"
+    cfg = paths.config_dir()
+    old = sorted(cfg.glob("debug-*.log"), key=lambda f: f.stat().st_mtime)
+    for stale in old[:max(0, len(old) - (KEEP_LOGS - 1))]:     # keep room for the new one
+        stale.unlink(missing_ok=True)
+    path = cfg / f"debug-{int(time.time())}.log"
     handler = logging.FileHandler(path)
     handler.setLevel(logging.DEBUG)
+    handler.addFilter(_ScrubFilter())
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     logger = logging.getLogger("icp")
     logger.setLevel(logging.DEBUG)

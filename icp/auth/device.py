@@ -4,11 +4,18 @@ the volatile X-Apple-I-MD* machine data and may override these values."""
 
 import base64
 import json
+
 import locale
 import uuid
 from datetime import datetime, timezone
 
 from .. import paths
+from .. import jsonfile
+from ..errors import AppleError
+
+
+class DeviceError(AppleError):
+    """device.json exists but cannot be used."""
 
 
 class Device:
@@ -21,8 +28,17 @@ class Device:
     def load_or_create(cls) -> "Device":
         f = paths.device_file()
         if f.exists():
-            data = json.loads(f.read_text())
-            return cls(data["device_id"], data["serial"], data["local_user_uuid"])
+            data = jsonfile.read_object(f)
+            try:
+                values = [data[k] for k in ("device_id", "serial", "local_user_uuid")]
+                if all(isinstance(v, str) and v for v in values):
+                    return cls(*values)
+            except KeyError:
+                pass
+            # Regenerating silently would make Apple see a new device and ask to trust it again.
+            raise DeviceError(
+                f"{f} is damaged. Move it aside (mv {f} {f}.bad) to create a new device "
+                "identity; you will have to sign in and approve this device again.")
         dev = cls(
             device_id=str(uuid.uuid4()).upper(),
             # Mac-like 12-char serial; replaced by anisette's if it provides one.

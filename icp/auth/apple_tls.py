@@ -75,6 +75,14 @@ def session() -> requests.Session:
     return _session
 
 
+def new_session() -> requests.Session:
+    """A session with Apple Root CA trust and no connection reuse (one request, then closed by
+    the caller or garbage collection)."""
+    configured = requests.Session()
+    configured.mount("https://", _AppleTLSAdapter(_build_context()))
+    return configured
+
+
 def request_once(method: str, url: str, **kwargs):
     """Send a request without connection reuse."""
     configured = requests.Session()

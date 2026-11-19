@@ -1,20 +1,65 @@
-"""Anisette client."""
+"""Anisette client - the "machine validation data" (X-Apple-I-MD / X-Apple-I-MD-M) GrandSlam needs.
+
+This is the v1 flow: the server owns the device identity and answers `GET /`. Use it for a server
+on this machine. For a remote server use `anisette_v3.AnisetteV3` (own identity, no sharing); the
+`open_anisette()` factory there picks between them.
+
+The identity this client reports (`client_info`, `user_agent`, `platform`) is what every Apple
+service call claims. Apple rejects a claim that contradicts where the data came from."""
 
 from __future__ import annotations
 
-import os
+import logging
 from urllib.parse import urlsplit
 
 import requests
 
+from .. import config
 from ..errors import AppleError
+
+logger = logging.getLogger(__name__)
 
 
 class AnisetteError(AppleError):
     pass
 
 
+MAX_REPLY = 1 << 20          # an anisette reply is a few hundred bytes; refuse anything huge
+MAX_VALUE = 4096             # longest header value we will forward to Apple
+
+
+def header_value(value, what: str, limit: int = MAX_VALUE, *, allow_int: bool = False) -> str:
+    """A string from a server that we are about to put in an HTTP header. Control characters
+    (CR/LF would smuggle extra headers) and absurd lengths are refused, not trimmed."""
+    if allow_int and isinstance(value, int) and not isinstance(value, bool):
+        value = str(value)
+    if (not isinstance(value, str) or not value or len(value) > limit
+            or any(ord(c) < 0x20 or ord(c) == 0x7F for c in value)):
+        raise AnisetteError(f"anisette server returned an invalid {what}")
+    return value
+
+
+def read_json(resp, what: str):
+    """The JSON body of a server reply, bounded in size, or AnisetteError."""
+    try:
+        if hasattr(resp, "iter_content"):
+            body = b""
+            for chunk in resp.iter_content(65536):
+                body += chunk
+                if len(body) > MAX_REPLY:
+                    resp.close()
+                    raise AnisetteError(f"anisette server's {what} is too large")
+            import json
+            return json.loads(body)
+        return resp.json()
+    except AnisetteError:
+        raise
+    except ValueError as e:
+        raise AnisetteError(f"anisette server's {what} is not JSON: {e}") from e
+
+
 class Anisette:
+    # Header keys an anisette server may return; we forward exactly these.
     _KEYS = (
         "X-Apple-I-MD",
         "X-Apple-I-MD-M",
@@ -28,22 +73,45 @@ class Anisette:
     )
 
     def __init__(self, url: str | None = None, *, timeout: int = 20):
-        configured = (url or os.environ.get("ICP_ANISETTE_URL") or "").strip().rstrip("/")
+        configured = config.anisette_url(url)
         if not configured:
             raise AnisetteError(
-                "no anisette server URL configured; pass --anisette URL or set "
-                "ICP_ANISETTE_URL"
-            )
-        parts = urlsplit(configured)
-        if parts.scheme not in ("http", "https") or not parts.netloc:
-            raise AnisetteError(f"invalid anisette server URL: {configured}")
+                "no anisette server URL configured; pass --anisette URL, set ICP_ANISETTE_URL or "
+                "put anisette_url = \"...\" in ~/.config/icp/config.toml (see the README for "
+                "which servers Apple accepts)")
         self.url = configured
+        parts = urlsplit(self.url)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise AnisetteError(f"invalid anisette server URL: {self.url}")
         self.timeout = timeout
-        self._client_info: dict[str, str] | None = None
+        self._reported: dict[str, str] | None = None
+        if not config.is_loopback(self.url):
+            logger.warning("anisette server %s is not on this machine; it sees your device "
+                           "identity. Prefer a loopback-only local server.", self.url)
+
+    # ---- identity ----------------------------------------------------------------------------
+    def _identity(self) -> dict[str, str]:
+        """What the server says its data was generated for (`/v3/client_info`)."""
+        if self._reported is None:
+            url = f"{self.url}/v3/client_info"
+            try:
+                r = requests.get(url, timeout=self.timeout, stream=True)
+                r.raise_for_status()
+                data = read_json(r, "client info")
+            except requests.RequestException as e:
+                raise AnisetteError(
+                    f"could not fetch anisette client info from {url}: {e}") from e
+            if not isinstance(data, dict):
+                raise AnisetteError(f"anisette server at {url} returned invalid client info")
+            self._reported = {k: header_value(data.get(k), "client info", 512)
+                              for k in ("client_info", "user_agent")}
+        return self._reported
 
     @property
     def client_info(self) -> str:
-        return self._identity()["client_info"]
+        """The X-Mme-Client-Info claimed to Apple: the user's override, else whatever the server
+        reports for itself (Apple rejects a claim that contradicts where the data came from)."""
+        return config.client_info() or self._identity()["client_info"]
 
     @property
     def user_agent(self) -> str:
@@ -51,47 +119,32 @@ class Anisette:
 
     @property
     def platform(self) -> str:
+        """The "<model> <os>" part of client_info; service identities are appended to it."""
         platform, marker, _ = self.client_info.partition(" <com.apple.")
         if not marker:
             raise AnisetteError("anisette client info has no service identity")
         return platform
 
-    def _identity(self) -> dict[str, str]:
-        if self._client_info is not None:
-            return self._client_info
-        url = f"{self.url}/v3/client_info"
-        try:
-            response = requests.get(url, timeout=self.timeout)
-            response.raise_for_status()
-            data = response.json()
-        except (requests.RequestException, ValueError) as e:
-            raise AnisetteError(f"could not fetch anisette client info from {url}: {e}") from e
-        if not isinstance(data, dict) or any(
-            not isinstance(data.get(key), str) or not data[key]
-            for key in ("client_info", "user_agent")
-        ):
-            raise AnisetteError(f"anisette server at {url} returned invalid client info")
-        self._client_info = {
-            "client_info": data["client_info"],
-            "user_agent": data["user_agent"],
-        }
-        return self._client_info
-
+    # ---- machine data ------------------------------------------------------------------------
     def headers(self) -> dict:
         try:
-            response = requests.get(self.url, timeout=self.timeout)
-            response.raise_for_status()
-            data = response.json()
-        except (requests.RequestException, ValueError) as e:
-            raise AnisetteError(f"could not fetch anisette data from {self.url}: {e}") from e
+            resp = requests.get(self.url, timeout=self.timeout, stream=True)
+            resp.raise_for_status()
+            data = read_json(resp, "machine data")
+        except requests.RequestException as e:
+            raise AnisetteError(
+                f"Could not reach anisette server at {self.url}: {e}\n"
+                "Start one bound to loopback (see `icp doctor`), or set ICP_ANISETTE_URL / "
+                "anisette_url in ~/.config/icp/config.toml."
+            ) from e
 
         if not isinstance(data, dict):
             raise AnisetteError(f"anisette server at {self.url} returned invalid JSON")
-        headers = {key: data[key] for key in self._KEYS if key in data}
-        if any(not isinstance(value, str) or not value for value in headers.values()):
-            raise AnisetteError(f"anisette server at {self.url} returned invalid header values")
-        if "X-Apple-I-MD" not in headers or "X-Apple-I-MD-M" not in headers:
+        out = {k: header_value(data[k], k, allow_int=(k == "X-Apple-I-MD-RINFO"))
+               for k in self._KEYS if k in data}
+        if "X-Apple-I-MD" not in out or "X-Apple-I-MD-M" not in out:
             raise AnisetteError(
-                f"anisette server at {self.url} did not return X-Apple-I-MD / X-Apple-I-MD-M"
+                f"Anisette server at {self.url} did not return machine data "
+                "(X-Apple-I-MD / X-Apple-I-MD-M). Is it a real anisette server?"
             )
-        return headers
+        return out

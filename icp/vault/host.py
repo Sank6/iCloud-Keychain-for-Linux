@@ -15,13 +15,11 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
-import json
 import plistlib
 import re
-import struct
 import sys
 
-from .. import totp as totp_codes
+from .. import choices, framing, psl, related, totp as totp_codes
 
 
 @dataclasses.dataclass(frozen=True)
@@ -66,32 +64,49 @@ def _to_unix(value) -> float:
     return 0.0
 
 
+_HOST_OK = re.compile(r"[a-z0-9_.-]+|\[[0-9a-f:.]+\]")
+
+
 def _normalize_host(value: str) -> str:
-    """Reduce a URL or host to a bare lowercase hostname (strip scheme/port/path/leading www)."""
-    v = value.strip().lower()
+    """Reduce a URL or host to a bare lowercase hostname, or "" when it cannot be trusted.
+
+    This decides whose passwords a page is offered, so it must read a URL exactly as a browser
+    does: `\\` counts as `/`, and `/`, `?` and `#` all end the authority (so `evil.com\\@a.com`
+    and `evil.com#@a.com` are `evil.com`, never `a.com`). A trailing dot, a port, userinfo and a
+    leading `www.` are dropped. Anything but ASCII letters, digits, `.`, `-`, `_` (or a bracketed
+    IPv6 literal) is "": a look-alike name never matches (browsers send punycode, `xn--...`, for
+    international names). Mirrors `normalize_host` in native/icp-agent/src/matching.rs."""
+    v = value.strip().lower().replace("\\", "/")
     if "://" in v:
         v = v.split("://", 1)[1]
-    v = v.split("/", 1)[0].split("?", 1)[0]
-    v = v.split("@")[-1]          # strip userinfo
-    v = v.split(":", 1)[0]        # strip port
+    elif v.startswith("//"):
+        v = v[2:]
+    v = re.split(r"[/?#]", v, maxsplit=1)[0].rsplit("@", 1)[-1]
+    if v.startswith("["):                                  # IPv6 literal: keep as written
+        v = v.split("]", 1)[0] + "]" if "]" in v else ""
+    else:
+        v = v.split(":", 1)[0].rstrip(".")
     if v.startswith("www."):
         v = v[4:]
-    return v
+    return v if _HOST_OK.fullmatch(v) else ""
 
 
 def domains_match(page: str, stored: str) -> bool:
     """True if a stored item's domain should autofill on `page`.
 
-    Matches exact host, and either being a sub-domain of the other (so `example.com` fills on
-    `login.example.com` and vice-versa). Conservative: requires a dotted-boundary suffix so
-    `notexample.com` never matches `example.com`.
+    Matches the exact host, or a sub-domain relationship in either direction (`example.com` fills
+    on `login.example.com` and vice versa), but only within one registrable domain: a shared public
+    suffix (`co.uk`, `github.io`) never links two sites, and IP addresses only match exactly.
     """
     p, s = _normalize_host(page), _normalize_host(stored)
     if not p or not s:
         return False
     if p == s:
         return True
-    return p.endswith("." + s) or s.endswith("." + p)
+    if psl.is_ip(p) or psl.is_ip(s):
+        return False
+    shorter, longer = (s, p) if p.endswith("." + s) else (p, s) if s.endswith("." + p) else (None, None)
+    return shorter is not None and not psl.is_public_suffix(shorter)
 
 
 def match_aliases(page_domain: str, aliases: list) -> list:
@@ -128,21 +143,30 @@ _GENERIC_NAME_TOKENS = {
 }
 
 
+def _label_only(raw_domain: str, stored: str) -> bool:
+    """True for entries identified only by a name: no domain at all, or a bare one-word domain.
+    An unusable domain (non-ASCII, junk) is NOT label-only, or a name inside it would match any
+    site. Mirrors `label_only` in native/icp-agent/src/matching.rs."""
+    return not raw_domain.strip() or (bool(stored) and "." not in stored)
+
+
 def _name_matches_host(page: str, name: str) -> bool:
     """Fallback for Passwords entries that decrypt as generic items with only a saved label.
 
     The iOS Passwords app can show a useful account name (for example "Cloudflare") even when
-    the decrypted item has no `srvr` host. Match only whole hostname labels so this stays much
-    narrower than substring matching.
+    the decrypted item has no `srvr` host. Only the site's own name may match: the label just
+    left of the public suffix (`amazon` in `www.amazon.co.uk`). A label anywhere else in the
+    host is attacker-chosen (`amazon.evil.com`, `evil.localhost`), so it never counts.
     """
-    labels = {label for label in _normalize_host(page).split(".") if label}
-    if not labels:
+    host = _normalize_host(page)
+    if not host or psl.is_ip(host) or psl.is_public_suffix(host) or "." not in host:
         return False
+    site = psl.registrable_domain(host).split(".")[0]
     tokens = {
         token for token in re.findall(r"[a-z0-9]+", name.lower())
         if len(token) >= 4 and token not in _GENERIC_NAME_TOKENS
     }
-    return bool(labels & tokens)
+    return site in tokens
 
 # `agrp` is the access group of the subsystem that wrote an item, and identifies its record type.
 _AGRP_LOGIN = {"com.apple.cfnetwork", "apple"}
@@ -289,15 +313,17 @@ class CredentialStore:
             if domains_match(page_domain, c.domain):
                 return 0 if _normalize_host(page_domain) == _normalize_host(c.domain) else 1
             stored = _normalize_host(c.domain)
-            if ("." not in stored) and _name_matches_host(page_domain, c.title or c.domain):
+            if related.related(page_domain, stored):
                 return 2
+            if _label_only(c.domain, stored) and _name_matches_host(page_domain, c.title or c.domain):
+                return 3
             return None
 
         ranked = [(rank, c) for c in self._creds if (rank := match_rank(c)) is not None]
         # exact-host matches first, then parent/subdomain, then label-only fallbacks; within a
         # tier, most-recently-used first, then title for a stable order.
         ranked.sort(key=lambda rc: (rc[0], -rc[1].recency, rc[1].title, rc[1].username))
-        return [c for _, c in ranked]
+        return choices.preferred_first(page_domain, [c for _, c in ranked])
 
     @classmethod
     def from_items(cls, items) -> "CredentialStore":
@@ -351,24 +377,14 @@ class CredentialStore:
         return cls(creds)
 
 
-# native-messaging framing
+# native-messaging framing lives in icp/framing.py
 def read_message(stream=None) -> dict | None:
-    stream = stream or sys.stdin.buffer
-    raw_len = stream.read(4)
-    if len(raw_len) < 4:
-        return None
-    (length,) = struct.unpack("<I", raw_len)
-    data = stream.read(length)
-    if len(data) < length:
-        return None
-    return json.loads(data.decode("utf-8"))
+    return framing.read(stream or sys.stdin.buffer)
 
 
 def write_message(message: dict, stream=None) -> None:
     stream = stream or sys.stdout.buffer
-    encoded = json.dumps(message).encode("utf-8")
-    stream.write(struct.pack("<I", len(encoded)))
-    stream.write(encoded)
+    stream.write(framing.pack(message))
     stream.flush()
 
 
@@ -376,6 +392,30 @@ def handle(request: dict, store: CredentialStore, aliases: list | None = None) -
     cmd = request.get("cmd")
     if cmd == "ping":
         return {"ok": True, "count": len(store)}
+    if cmd == "chose":
+        domain, username = request.get("domain", ""), request.get("username", "")
+        if domain and username:
+            choices.record(domain, username)
+        return {"ok": True}
+    if cmd == "search":
+        q = str(request.get("query", "")).strip().lower()
+        if len(q) < 2:
+            return {"ok": True, "credentials": []}
+        hits = [c for c in store.all()
+                if q in f"{c.title} {c.domain} {c.username}".lower()]
+        hits.sort(key=lambda c: -c.recency)
+        return {"ok": True, "credentials": [c.wire_dict() for c in hits[:40]]}
+    if cmd in ("open_app", "login"):
+        import subprocess
+        argv = ["-m", "icp.gui"] if cmd == "open_app" else ["-m", "icp.cli.app", "login", "--gui"]
+        subprocess.Popen([sys.executable, *argv], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+        return {"ok": True}
+    if cmd == "status":
+        from .. import paths, status
+        return {"ok": True, "count": len(store), "sync": status.read(),
+                "signed_in": paths.session_file().exists()}
     if cmd == "match":
         domain = request.get("domain", "")
         if not domain:
@@ -424,7 +464,16 @@ def _maybe_trigger_sync() -> None:
         attempt = paths.sync_attempt_file()
         if attempt.exists() and (time.time() - attempt.stat().st_mtime) < 300:
             return  # already triggered recently
-        attempt.touch()
+        # Back off after failures (15 min doubling, capped at 24 h) so a broken sign-in isn't
+        # retried against Apple every few minutes.
+        from .. import status
+        st = status.read()
+        if st.get("needs_login"):
+            return  # nothing an unattended sync can fix; the UIs offer "Sign in"
+        fails = int(st.get("failures", 0))
+        if fails and time.time() - st.get("last_attempt", 0) < min(900 * 2 ** (fails - 1), 86400):
+            return
+        attempt.touch(mode=0o600)
         subprocess.Popen(
             [sys.executable, "-m", "icp.cli.app", "sync", "--background"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

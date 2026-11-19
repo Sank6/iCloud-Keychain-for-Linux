@@ -1,0 +1,14 @@
+<!doctype html><meta charset="utf-8"><body>
+<form id="emailfirst"><input id="ef-email" type="email" name="identifier" autocomplete="username"></form>
+<form id="classic"><input id="cl-user" name="login" type="text"><input id="cl-pass" type="password"></form>
+<form id="split"><input id="so1" maxlength="1" inputmode="numeric"><input maxlength="1" inputmode="numeric"><input maxlength="1" inputmode="numeric"><input maxlength="1" inputmode="numeric"><input maxlength="1" inputmode="numeric"><input id="so6" maxlength="1" inputmode="numeric"></form>
+<form id="otp"><input id="otp1" name="verification_code" autocomplete="one-time-code"></form>
+<form id="search"><input id="srch" type="text" name="q" placeholder="Search"></form>
+<form id="zip"><input id="zipf" type="text" name="postal_code"></form>
+<div id="host"></div>
+<script>
+const r=document.getElementById('host').attachShadow({mode:'open'});
+r.innerHTML='<input id="sh-user" type="text" name="username"><input id="sh-pass" type="password">';
+window.chrome={runtime:{id:"x",lastError:null,sendMessage(m,cb){
+ if(m.cmd==="match")cb({ok:true,credentials:[{domain:"localhost",username:"me",password:"pw",title:"Local",totp:{code:"123456",expires:Date.now()/1000+20}}],aliases:[]});else cb({ok:true});},onMessage:{addListener(){}}}};
+</script><script src="../../extension/content.js"></script>

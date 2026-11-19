@@ -11,8 +11,7 @@ import hashlib
 import os
 import uuid as _uuid
 
-import requests
-
+from .. import net
 from ..auth.headers import service_client_info
 from ..proto import codec as _proto
 from ..proto.codec import Writer, decode_fields, first, first_str
@@ -168,24 +167,22 @@ def ck_app_init(container: str, bundle: str, dsid: str, mme_token: str, anisette
     headers["Authorization"] = "Basic " + base64.b64encode(
         f"{dsid}:{mme_token}".encode()).decode()
     headers.update(anisette.headers())
-    try:
-        resp = requests.post(CK_APP_INIT_URL, params={"container": container}, headers=headers,
-                             data="", verify=VERIFY_TLS, timeout=timeout)
-    except requests.RequestException as e:
-        raise CloudKitError(f"network error talking to ckAppInit: {e}") from e
-    _raise_for_throttle(resp, "ckAppInit")
+    resp = _post("ckAppInit", CK_APP_INIT_URL, params={"container": container}, headers=headers,
+                 data="", verify=VERIFY_TLS, timeout=(5, timeout))
     if resp.status_code == 401:
         raise CloudKitError("ckAppInit rejected the mmeAuthToken (HTTP 401) - re-run "
                             "`icp login` to refresh it", http_status=401)
     return resp.json()["cloudKitUserId"]
 
 
-def _raise_for_throttle(resp, what: str) -> None:
-    """429 / 5xx -> CloudKitError carrying Retry-After, so the caller backs off (ratelimit.py)."""
-    if resp.status_code == 429 or resp.status_code >= 500:
-        from ..ratelimit import retry_after_seconds
-        raise CloudKitError(f"{what}: HTTP {resp.status_code} (throttled or unavailable)",
-                            http_status=resp.status_code, retry_after=retry_after_seconds(resp))
+def _post(what: str, url: str, **kw):
+    """POST via icp.net (retries 429/5xx and network blips a couple of times - these are idempotent
+    reads). HTTP-layer failures become CloudKitError carrying Retry-After so callers back off."""
+    try:
+        return net.request("post", url, retries=2, **kw)
+    except net.AppleNetError as e:
+        raise CloudKitError(f"{what}: {e}", http_status=e.status, retry_after=e.retry_after,
+                            kind=e.kind) from e
 
 
 class CloudKitError(AppleError):
@@ -193,12 +190,13 @@ class CloudKitError(AppleError):
 
     def __init__(self, message: str, *, code: int | None = None,
                  description: str | None = None, http_status: int | None = None,
-                 retry_after: float | None = None):
+                 retry_after: float | None = None, kind: str = ""):
         super().__init__(message)
         self.code = code
         self.description = description
         self.http_status = http_status
         self.retry_after = retry_after
+        self.kind = kind
 
 
 @dataclasses.dataclass
@@ -270,16 +268,15 @@ class CloudKitTransport:
                               database=database)
         req = build_request_operation_generic(header, op_type, request_field, request_bytes)
         body = gzip.compress(delimit(req))
-        try:
-            resp = requests.post(url, headers=self._headers(bundle, routing_hint, database_scope),
-                                 data=body, verify=VERIFY_TLS, timeout=self.timeout)
-        except requests.RequestException as e:
-            raise CloudKitError(f"network error talking to {url}: {e}") from e
-        _raise_for_throttle(resp, url)
+        resp = _post(net.safe_url(url), url,
+                     headers=self._headers(bundle, routing_hint, database_scope),
+                     data=body, verify=VERIFY_TLS, timeout=(5, self.timeout))
         try:
             messages = undelimit(maybe_gunzip(resp.content))
             result = parse_response_operation(messages[0])
         except Exception as e:   # HTML error page, truncated body ...
+            if ne := net.auth_error(resp, "the CloudKit request"):
+                raise CloudKitError(str(ne), http_status=ne.status, kind=ne.kind) from e
             raise CloudKitError(f"unreadable CloudKit response (HTTP {resp.status_code})",
                                 http_status=resp.status_code) from e
         if not result.ok:

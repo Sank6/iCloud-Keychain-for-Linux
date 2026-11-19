@@ -8,3 +8,9 @@ dist/
 config/
 *.enc
 master.key
+
+extension.pem
+extension.crx
+.pytest_cache/
+native/*/target/
+dist/

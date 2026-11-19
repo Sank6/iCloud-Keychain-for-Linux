@@ -7,6 +7,7 @@ import dataclasses
 
 import requests
 
+from .. import net
 from ..errors import AppleError
 
 
@@ -50,7 +51,11 @@ class HmeClient:
         self.http = http
 
     def list(self) -> list[HmeAlias]:
-        resp = self.http.get(f"{self._v2}/hme/list", headers=_HEADERS, timeout=20)
+        try:
+            resp = net.request("get", f"{self._v2}/hme/list", session=self.http,
+                               headers=_HEADERS, timeout=(5, 20))
+        except net.AppleNetError as e:
+            raise HmeError(str(e)) from e
         try:
             data = resp.json()
         except ValueError as e:
