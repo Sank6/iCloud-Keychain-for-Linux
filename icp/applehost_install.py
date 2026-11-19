@@ -170,6 +170,45 @@ def patch_unpacked_copy(dest=None, src=None) -> "hosts.Path":
     return dest
 
 
+def cached_script_state(prof) -> str | None:
+    """Which copy of Apple's background script the browser has cached for a profile: "patched",
+    "original" or None. Chromium keeps running the cached script of an extension until the
+    extension is reloaded (a browser restart does not refresh it), so an edit on disk alone does
+    nothing for an extension the browser has already run. The newest cached copy decides."""
+    newest = None
+    cache = hosts.Path(prof) / "Service Worker" / "ScriptCache"
+    try:
+        entries = [f for f in cache.iterdir() if f.is_file() and f.stat().st_size > 50_000]
+    except OSError:
+        return None
+    for f in sorted(entries, key=lambda f: f.stat().st_mtime):
+        try:
+            blob = f.read_bytes()
+        except OSError:
+            continue
+        if PATCH.encode() in blob:
+            newest = "patched"
+        elif GATE.encode() in blob:
+            newest = "original"
+    return newest
+
+
+def stale_cache() -> list[str]:
+    """Profiles whose browser still runs the original script although the file is patched."""
+    if not any(state == "patched" for _d, state in ((d, file_state(d)) for d in extension_dirs())):
+        return []
+    return [f"{label}/{prof.name}" for label, prof in profiles()
+            if cached_script_state(prof) == "original"]
+
+
+def notify_reload() -> bool:
+    """Tell the user, on the desktop, that the extension must be reloaded to pick up the patch."""
+    from .applehost_main import _notify_dbus
+    return _notify_dbus("iCloud Passwords needs a reload",
+                        "Open the browser's extensions page and reload iCloud Passwords to "
+                        "finish setting it up.")
+
+
 def disabled_by_browser() -> list[str]:
     """Profiles whose browser disabled the extension (e.g. content verification). Reads each
     profile's Preferences; nothing is written."""
@@ -223,6 +262,7 @@ def status() -> dict:
             outdated = (have, new)
     return {"hosts": out_hosts, "installed": installed, "mode": mode, "outdated_copy": outdated,
             "disabled": disabled_by_browser() if mode == "inplace" else [],
+            "stale_cache": stale_cache() if mode == "inplace" else [],
             "unpacked_copy": unpacked}
 
 

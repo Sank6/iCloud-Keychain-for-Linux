@@ -54,6 +54,11 @@ def autofill_summary(st: dict) -> tuple[str, str]:
         return ("Your browser disabled the patched extension",
                 "Run `icp setup --apple-extension unpacked`, then load that copy with Developer "
                 "mode -> Load unpacked.")
+    if mode == "inplace" and st.get("stale_cache"):
+        return ("Reload the extension to finish",
+                "The extension is patched, but your browser is still running its original, "
+                "unpatched script, so it shows a blank window. Open the extensions page and "
+                "reload iCloud Passwords (restarting the browser does not refresh it).")
     if mode == "inplace":
         return ("Apple's extension is ready",
                 f"{names}: Apple's iCloud Passwords extension is patched for Linux and re-patched "

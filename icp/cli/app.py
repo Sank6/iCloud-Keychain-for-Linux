@@ -955,9 +955,12 @@ def cmd_apple_extension(args) -> int:
         for folder, state in st["installed"]:
             ui.out(f"  {state}: {folder}")
         return 0
-    for folder, state in ah.patch_in_place(wait=args.wait):
+    results = ah.patch_in_place(wait=args.wait)
+    for folder, state in results:
         if not args.quiet or state == "patched":
             ui.out(f"{state}: {folder}")
+    if any(state == "patched" for _f, state in results) or ah.stale_cache():
+        ah.notify_reload()             # the browser runs its cached copy until it is reloaded
     return 0
 
 

@@ -229,3 +229,56 @@ def test_a_symlinked_extension_root_is_not_followed(browser, tmp_path):
     os.symlink(outside, base / ah.APPLE_EXTENSION_ID)
     assert ah.patch_in_place() == []
     assert (outside / "3.4.0_0/background.js").read_text() == STOCK
+
+
+# ---- the browser's cached script -----------------------------------------------------------
+def _cache(prof, patched, mtime):
+    cache = prof / "Service Worker/ScriptCache"
+    cache.mkdir(parents=True, exist_ok=True)
+    body = (STOCK.replace(ah.GATE, ah.PATCH) if patched else STOCK).encode() + b" " * 60_000
+    f = cache / f"entry_{mtime}"
+    f.write_bytes(body)
+    os.utime(f, (mtime, mtime))
+
+
+def test_the_cached_script_state_follows_the_newest_copy(browser):
+    prof = browser / "Default"
+    assert ah.cached_script_state(prof) is None
+    _cache(prof, patched=False, mtime=1000)
+    assert ah.cached_script_state(prof) == "original"
+    _cache(prof, patched=True, mtime=2000)
+    assert ah.cached_script_state(prof) == "patched"
+
+
+def test_a_patched_file_with_an_original_cache_is_reported_everywhere(browser, monkeypatch):
+    ah.install()
+    install_extension(browser)
+    ah.patch_in_place()
+    _cache(browser / "Default", patched=False, mtime=1000)
+    assert ah.stale_cache() == ["Helium/Default"]
+    sev, msg, hint = doctor.check_apple_extension()
+    assert sev == doctor.WARN and "blank window" in msg and "reload" in hint
+    from icp.gui.model import autofill_summary
+    heading, body = autofill_summary(ah.status())
+    assert heading == "Reload the extension to finish" and "restarting" in body
+    _cache(browser / "Default", patched=True, mtime=3000)          # after the reload
+    assert ah.stale_cache() == [] and doctor.check_apple_extension()[0] == doctor.OK
+
+
+def test_an_unpatched_file_is_not_a_stale_cache_problem(browser):
+    install_extension(browser)
+    _cache(browser / "Default", patched=False, mtime=1000)
+    assert ah.stale_cache() == []
+
+
+def test_the_watcher_notifies_when_it_patched_or_the_cache_is_stale(browser, monkeypatch, capsys):
+    from icp.cli import app
+    import argparse
+    sent = []
+    monkeypatch.setattr(ah, "notify_reload", lambda: sent.append(1) or True)
+    install_extension(browser)
+    ns = argparse.Namespace(action="patch", wait=0, quiet=True)
+    assert app.cmd_apple_extension(ns) == 0 and sent == [1]        # it just patched
+    assert app.cmd_apple_extension(ns) == 0 and sent == [1]        # nothing new, cache unknown
+    _cache(browser / "Default", patched=False, mtime=1000)
+    assert app.cmd_apple_extension(ns) == 0 and sent == [1, 1]     # stale cache: remind again

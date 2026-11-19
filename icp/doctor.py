@@ -210,6 +210,10 @@ def check_apple_extension():
     if st["disabled"]:
         return FAIL, ("your browser disabled the patched extension (" + ", ".join(st["disabled"])
                       + ")"), "run `icp setup --apple-extension unpacked` and load that copy instead"
+    if st["stale_cache"]:
+        return WARN, ("your browser is still running the original (unpatched) Apple script ("
+                      + ", ".join(st["stale_cache"]) + "), so the extension shows a blank window"), \
+            "reload iCloud Passwords on the browser's extensions page (a restart does not help)"
     if st["outdated_copy"]:
         have, new = st["outdated_copy"]
         return WARN, (f"Apple updated the iCloud Passwords extension ({have} -> {new}); your "

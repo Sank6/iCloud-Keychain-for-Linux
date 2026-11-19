@@ -116,8 +116,9 @@ def apple_extension(mode: str | None) -> None:
         ui.warn("an extension version this project does not recognise was left untouched")
     if _install_units(_extension_units(), "icp-apple-extension.path"):
         ui.out("  watcher enabled: the patch is re-applied after every extension update")
-    if any(state == "patched" for _f, state in results):
-        ui.out("  Reload the extension on the browser's extensions page (or restart the browser).")
+    if any(state == "patched" for _f, state in results) or ah.stale_cache():
+        ui.out("  Now reload iCloud Passwords on the browser's extensions page: a browser keeps "
+               "running the\n  copy it cached earlier, and a restart does not refresh it.")
 
 
 def run(args) -> int:
