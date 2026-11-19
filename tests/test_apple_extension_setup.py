@@ -257,10 +257,10 @@ def test_a_patched_file_with_an_original_cache_is_reported_everywhere(browser, m
     _cache(browser / "Default", patched=False, mtime=1000)
     assert ah.stale_cache() == ["Helium/Default"]
     sev, msg, hint = doctor.check_apple_extension()
-    assert sev == doctor.WARN and "blank window" in msg and "reload" in hint
+    assert sev == doctor.WARN and "blank window" in msg and "icp apple-extension refresh" in hint
     from icp.gui.model import autofill_summary
     heading, body = autofill_summary(ah.status())
-    assert heading == "Reload the extension to finish" and "restarting" in body
+    assert heading == "Restart the browser to finish" and "icp apple-extension refresh" in body
     _cache(browser / "Default", patched=True, mtime=3000)          # after the reload
     assert ah.stale_cache() == [] and doctor.check_apple_extension()[0] == doctor.OK
 
@@ -271,14 +271,76 @@ def test_an_unpatched_file_is_not_a_stale_cache_problem(browser):
     assert ah.stale_cache() == []
 
 
-def test_the_watcher_notifies_when_it_patched_or_the_cache_is_stale(browser, monkeypatch, capsys):
+def _lock(browser, pid):
+    os.symlink(f"testhost-{pid}", browser / "SingletonLock")
+
+
+def _sw(browser):
+    for name in ("ScriptCache", "Database"):
+        (browser / "Default/Service Worker" / name).mkdir(parents=True, exist_ok=True)
+    return browser / "Default/Service Worker"
+
+
+def test_refresh_sets_the_cache_aside_when_the_browser_is_closed(browser):
+    install_extension(browser)
+    ah.patch_in_place()
+    _cache(browser / "Default", patched=False, mtime=1000)
+    sw = _sw(browser)
+    (sw / "Database/000003.log").write_text("registrations")
+    assert ah.refresh_all() == [("Helium/Default", "refreshed")]
+    assert not (sw / "ScriptCache").exists() and not (sw / "Database").exists()
+    aside = sorted(p.name for p in sw.iterdir())
+    assert len(aside) == 2 and all(".icp-aside-" in n for n in aside)       # kept, never deleted
+    assert (next(p for p in sw.iterdir() if p.name.startswith("Database")) / "000003.log").exists()
+    assert ah.refresh_all() == [("Helium/Default", "nothing")]
+
+
+def test_refresh_never_touches_a_running_browser(browser):
+    install_extension(browser)
+    ah.patch_in_place()
+    _cache(browser / "Default", patched=False, mtime=1000)
+    sw = _sw(browser)
+    _lock(browser, os.getpid())                                            # a live owner
+    assert ah.browser_running(browser / "Default")
+    assert ah.refresh_all() == [("Helium/Default", "running")]
+    assert (sw / "ScriptCache").exists() and (sw / "Database").exists()
+
+
+def test_a_stale_lock_from_a_crash_does_not_block_the_refresh(browser):
+    install_extension(browser)
+    ah.patch_in_place()
+    _cache(browser / "Default", patched=False, mtime=1000)
+    _sw(browser)
+    _lock(browser, 2 ** 22 + 12345)                                        # no such process
+    assert not ah.browser_running(browser / "Default")
+    assert ah.refresh_all() == [("Helium/Default", "refreshed")]
+
+
+def test_restoring_the_original_also_clears_a_cached_patched_script(browser):
+    install_extension(browser)
+    ah.patch_in_place()
+    _cache(browser / "Default", patched=True, mtime=1000)
+    _sw(browser)
+    assert ah.refresh_all() == [("Helium/Default", "nothing")]             # file and cache agree
+    ah.restore_in_place()
+    assert ah.refresh_all() == [("Helium/Default", "refreshed")]           # now they disagree
+
+
+def test_the_watcher_refreshes_a_closed_browser_and_warns_about_an_open_one(browser, monkeypatch):
     from icp.cli import app
     import argparse
     sent = []
     monkeypatch.setattr(ah, "notify_reload", lambda: sent.append(1) or True)
     install_extension(browser)
-    ns = argparse.Namespace(action="patch", wait=0, quiet=True)
-    assert app.cmd_apple_extension(ns) == 0 and sent == [1]        # it just patched
-    assert app.cmd_apple_extension(ns) == 0 and sent == [1]        # nothing new, cache unknown
     _cache(browser / "Default", patched=False, mtime=1000)
-    assert app.cmd_apple_extension(ns) == 0 and sent == [1, 1]     # stale cache: remind again
+    sw = _sw(browser)
+    ns = argparse.Namespace(action="patch", wait=0, quiet=True)
+    assert app.cmd_apple_extension(ns) == 0
+    assert not (sw / "ScriptCache").exists() and sent == []               # closed: fixed silently
+    # an update arrives while the browser is open
+    install_extension(browser, "3.5.0")
+    _cache(browser / "Default", patched=False, mtime=2000)
+    _sw(browser)
+    _lock(browser, os.getpid())
+    assert app.cmd_apple_extension(ns) == 0 and sent == [1]               # open: tell the user
+    assert (sw / "ScriptCache").exists()

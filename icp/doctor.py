@@ -206,14 +206,14 @@ def check_apple_extension():
             "install it from the Chrome Web Store, then run `icp setup` (the watcher patches it)"
     if st["mode"] is None:
         return WARN, "Apple's iCloud Passwords extension is installed but not patched for Linux", \
-            "run `icp setup` (or `icp apple-extension patch`), then reload the extension"
+            "run `icp setup` (it patches the extension and clears the browser's cached copy)"
     if st["disabled"]:
         return FAIL, ("your browser disabled the patched extension (" + ", ".join(st["disabled"])
                       + ")"), "run `icp setup --apple-extension unpacked` and load that copy instead"
     if st["stale_cache"]:
         return WARN, ("your browser is still running the original (unpatched) Apple script ("
                       + ", ".join(st["stale_cache"]) + "), so the extension shows a blank window"), \
-            "reload iCloud Passwords on the browser's extensions page (a restart does not help)"
+            "quit the browser completely, run `icp apple-extension refresh`, then start it again"
     if st["outdated_copy"]:
         have, new = st["outdated_copy"]
         return WARN, (f"Apple updated the iCloud Passwords extension ({have} -> {new}); your "

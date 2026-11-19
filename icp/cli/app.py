@@ -948,6 +948,11 @@ def cmd_apple_extension(args) -> int:
     if args.action == "restore":
         for folder in ah.restore_in_place():
             ui.out(f"restored: {folder}")
+        for name, result in ah.refresh_all():
+            if result == "refreshed":
+                ui.out(f"{name}: browser cache cleared; the original applies at the next start")
+            elif result == "running":
+                ui.out(f"{name}: quit the browser completely, then run `icp apple-extension refresh`")
         return 0
     if args.action == "status":
         st = ah.status()
@@ -955,12 +960,21 @@ def cmd_apple_extension(args) -> int:
         for folder, state in st["installed"]:
             ui.out(f"  {state}: {folder}")
         return 0
-    results = ah.patch_in_place(wait=args.wait)
+    results = ah.patch_in_place(wait=args.wait) if args.action == "patch" else []
     for folder, state in results:
         if not args.quiet or state == "patched":
             ui.out(f"{state}: {folder}")
-    if any(state == "patched" for _f, state in results) or ah.stale_cache():
-        ah.notify_reload()             # the browser runs its cached copy until it is reloaded
+    if args.action == "refresh" or any(state == "patched" for _f, state in results):
+        # The browser runs its cached script until that cache is cleared: do it now when the
+        # browser is closed, otherwise say what to do.
+        outcomes = ah.refresh_all()
+        for name, result in outcomes:
+            if result == "refreshed":
+                ui.out(f"{name}: browser cache cleared; the patch applies at the next start")
+            elif result == "running":
+                ui.out(f"{name}: quit the browser completely, then run `icp apple-extension refresh`")
+        if any(r == "running" for _n, r in outcomes):
+            ah.notify_reload()
     return 0
 
 
@@ -1058,7 +1072,7 @@ def main(argv=None) -> int:
 
     ae = sub.add_parser("apple-extension",
                         help="patch, restore or report Apple's iCloud Passwords extension")
-    ae.add_argument("action", choices=["patch", "restore", "status"])
+    ae.add_argument("action", choices=["patch", "restore", "status", "refresh"])
     ae.add_argument("--wait", type=float, default=0, help="seconds to wait for it to appear")
     ae.add_argument("--quiet", action="store_true")
     ae.set_defaults(func=cmd_apple_extension)

@@ -173,7 +173,7 @@ def patch_unpacked_copy(dest=None, src=None) -> "hosts.Path":
 def cached_script_state(prof) -> str | None:
     """Which copy of Apple's background script the browser has cached for a profile: "patched",
     "original" or None. Chromium keeps running the cached script of an extension until the
-    extension is reloaded (a browser restart does not refresh it), so an edit on disk alone does
+    extension's cache is cleared (neither a browser restart nor an extension reload does), so an edit on disk alone does
     nothing for an extension the browser has already run. The newest cached copy decides."""
     newest = None
     cache = hosts.Path(prof) / "Service Worker" / "ScriptCache"
@@ -201,12 +201,61 @@ def stale_cache() -> list[str]:
             if cached_script_state(prof) == "original"]
 
 
+def _newest_file_state(prof) -> str | None:
+    """The state of the newest installed copy of the extension in a profile, or None."""
+    base = hosts.Path(prof) / "Extensions" / APPLE_EXTENSION_ID
+    try:
+        versions = [v for v in sorted(base.iterdir()) if v.is_dir() and not v.is_symlink()]
+    except OSError:
+        return None
+    return file_state(versions[-1]) if versions else None
+
+
+def browser_running(prof) -> bool:
+    """True when a browser process owns the profile's user-data folder (Chromium's SingletonLock
+    is a symlink to "<host>-<pid>"); a stale lock from a crash does not count."""
+    lock = hosts.Path(prof).parent / "SingletonLock"
+    try:
+        pid = int(os.readlink(lock).rsplit("-", 1)[-1])
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def refresh_script_cache(prof) -> str:
+    """Make a profile's browser re-read Apple's patched script.
+
+    Chromium runs an extension's cached service-worker script until its cache AND registration
+    database are gone (verified: clearing only one breaks the extension; reloading it or bumping
+    the manifest version changes nothing), so both folders are set aside, never deleted: the
+    browser rebuilds them, and websites' service workers simply register again on the next visit.
+    Returns "refreshed", "running" (browser open: nothing touched) or "nothing" (nothing to do)."""
+    sw = hosts.Path(prof) / "Service Worker"
+    wanted = {"patched": "patched", "stock": "original"}.get(_newest_file_state(prof))
+    cached = cached_script_state(prof)
+    if wanted is None or cached is None or cached == wanted:
+        return "nothing"
+    if browser_running(prof):
+        return "running"
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    for name in ("ScriptCache", "Database"):
+        if (sw / name).exists():
+            os.rename(sw / name, sw / f"{name}.icp-aside-{stamp}")
+    return "refreshed"
+
+
+def refresh_all() -> list[tuple[str, str]]:
+    """[(profile, result)] for every profile whose browser still runs the original script."""
+    return [(f"{label}/{prof.name}", refresh_script_cache(prof)) for label, prof in profiles()]
+
+
 def notify_reload() -> bool:
-    """Tell the user, on the desktop, that the extension must be reloaded to pick up the patch."""
+    """Tell the user, on the desktop, that the browser must be restarted to use the patch."""
     from .applehost_main import _notify_dbus
-    return _notify_dbus("iCloud Passwords needs a reload",
-                        "Open the browser's extensions page and reload iCloud Passwords to "
-                        "finish setting it up.")
+    return _notify_dbus("iCloud Passwords needs a browser restart",
+                        "Quit the browser completely, then run `icp apple-extension refresh` "
+                        "once and start it again.")
 
 
 def disabled_by_browser() -> list[str]:

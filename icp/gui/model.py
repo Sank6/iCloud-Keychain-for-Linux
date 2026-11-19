@@ -55,16 +55,15 @@ def autofill_summary(st: dict) -> tuple[str, str]:
                 "Run `icp setup --apple-extension unpacked`, then load that copy with Developer "
                 "mode -> Load unpacked.")
     if mode == "inplace" and st.get("stale_cache"):
-        return ("Reload the extension to finish",
-                "The extension is patched, but your browser is still running its original, "
-                "unpatched script, so it shows a blank window. Open the extensions page and "
-                "reload iCloud Passwords (restarting the browser does not refresh it).")
+        return ("Restart the browser to finish",
+                "The extension is patched, but your browser is still running a cached copy of "
+                "Apple's original script, so it shows a blank window. Quit the browser "
+                "completely, run `icp apple-extension refresh` in a terminal, then start it again.")
     if mode == "inplace":
         return ("Apple's extension is ready",
                 f"{names}: Apple's iCloud Passwords extension is patched for Linux and re-patched "
                 "after every update. Click its icon and type the 6-digit pairing code shown in a "
-                "notification (once per browser start). If it was installed just now, reload it "
-                "on the extensions page first.")
+                "notification (once per browser start).")
     if mode == "unpacked":
         return ("Apple's extension is ready (separate copy)",
                 f"{names}: load the copy once (extensions page, Developer mode, Load unpacked) and "

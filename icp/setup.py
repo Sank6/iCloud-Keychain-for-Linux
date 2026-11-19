@@ -95,7 +95,11 @@ def apple_extension(mode: str | None) -> None:
         _disable_extension_watcher()
         for folder in ah.restore_in_place():
             ui.out(f"  restored the original extension in {folder}")
-        ui.out("  Apple's extension is back to stock; reload it in the browser.")
+        for name, result in ah.refresh_all():
+            if result == "running":
+                ui.warn(f"{name}: quit the browser completely, then run `icp apple-extension "
+                        "refresh` so it stops using the patched copy it cached")
+        ui.out("  Apple's extension is back to stock.")
         return
     if mode == "unpacked":
         _disable_extension_watcher()
@@ -117,8 +121,13 @@ def apple_extension(mode: str | None) -> None:
     if _install_units(_extension_units(), "icp-apple-extension.path"):
         ui.out("  watcher enabled: the patch is re-applied after every extension update")
     if any(state == "patched" for _f, state in results) or ah.stale_cache():
-        ui.out("  Now reload iCloud Passwords on the browser's extensions page: a browser keeps "
-               "running the\n  copy it cached earlier, and a restart does not refresh it.")
+        for name, result in ah.refresh_all():
+            if result == "refreshed":
+                ui.out(f"  {name}: browser cache cleared; the patch applies when you start it")
+            elif result == "running":
+                ui.warn(f"{name}: the browser is open and keeps running Apple's original script. "
+                        "Quit it completely, then run `icp apple-extension refresh` and start it "
+                        "again (reloading the extension does not help)")
 
 
 def run(args) -> int:

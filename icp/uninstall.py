@@ -57,7 +57,8 @@ def plan(purge: bool = False) -> list[tuple[str, callable]]:
     if present:
         steps.append((f"stop and remove the systemd units ({', '.join(present)})", _remove_units))
     if ah.extension_dirs() and any(state == "patched" for _d, state in ah.status()["installed"]):
-        steps.append(("restore Apple's original iCloud Passwords extension", ah.restore_in_place))
+        steps.append(("restore Apple's original iCloud Passwords extension",
+                      lambda: (ah.restore_in_place(), ah.refresh_all())))
     for f in host_manifests():
         steps.append((f"remove the browser host manifest {f}", f.unlink))
     for f in desktop_files():
