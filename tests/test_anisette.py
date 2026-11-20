@@ -47,6 +47,29 @@ def test_headers_are_filtered(monkeypatch):
     }
 
 
+def test_headers_are_reused_briefly(monkeypatch):
+    calls = []
+    clock = [100.0]
+
+    def get(url, **kwargs):
+        calls.append(url)
+        return _Response({"X-Apple-I-MD": f"otp-{len(calls)}", "X-Apple-I-MD-M": "machine"})
+
+    monkeypatch.setattr(requests, "get", get)
+    monkeypatch.setattr("icp.auth.anisette.time.monotonic", lambda: clock[0])
+    anisette = Anisette(SERVER_URL)
+
+    first = anisette.headers()
+    first["X-Apple-I-MD"] = "changed by the caller"
+    clock[0] += Anisette._REUSE_SECONDS - 1
+    assert anisette.headers()["X-Apple-I-MD"] == "otp-1"
+    assert len(calls) == 1
+
+    clock[0] += 2
+    assert anisette.headers()["X-Apple-I-MD"] == "otp-2"
+    assert len(calls) == 2
+
+
 @pytest.mark.parametrize(("client_info", "platform"), [
     (
         "<PC> <Windows;6.2(0,0);9200> "
