@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # Register the native-messaging host with Chromium-family browsers (incl. Helium) and Firefox.
 #
-# Usage: host/install.sh [CHROME_EXTENSION_ID]
-# For Chromium/Helium, get CHROME_EXTENSION_ID from the browser's Extensions page after loading
-# ./extension unpacked, and pass it here. Firefox is keyed by the fixed gecko id in the manifest,
-# so it is registered automatically whether or not you pass a Chromium id.
+# Usage: host/install.sh [CHROME_EXTENSION_ID] [FIREFOX_ADDON_ID]
+#
+# CHROME_EXTENSION_ID is the id Chromium-family browsers assign when the extension is
+# loaded unpacked - take it from the browser's Extensions page.
+#
+# FIREFOX_ADDON_ID is the gecko id of the Firefox add-on. It defaults to the one in
+# extension/manifest.json, which is what a sideloaded copy has. A build signed by
+# addons.mozilla.org gets its own id instead, so pass that one when you install from
+# AMO (it is in the add-on's URL: <id>@<domain>).
 #
 # Writes the host manifest into each browser's NativeMessagingHosts dir, pointing at the
 # launcher in this repo. Re-run after moving the repo.
@@ -13,7 +18,7 @@ set -euo pipefail
 EXT_ID="${1:-}"
 
 # Must match browser_specific_settings.gecko.id in extension/manifest.json.
-GECKO_ID="icp-linux@local"
+GECKO_ID="${2:-icp-linux@local}"
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LAUNCHER="$REPO/host/icp-host.sh"
@@ -56,7 +61,7 @@ else
   echo "No Chromium extension id given; skipping Chromium-family (pass it as arg 1 to enable)." >&2
 fi
 
-# --- Firefox (keyed by the fixed gecko id, so no per-install id needed) ---
+# --- Firefox (keyed by the add-on's gecko id, so no per-install id needed for a sideloaded copy) ---
 FIREFOX_MANIFEST="$(sed -e "s#__HOST_LAUNCHER__#$LAUNCHER#" \
                         -e "s#__GECKO_ID__#$GECKO_ID#" \
                         "$REPO/host/org.icp.native.firefox.json.template")"

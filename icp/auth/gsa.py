@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import logging
 import plistlib as plist
+import time
 
 import requests
 import srp._pysrp as srp
@@ -22,11 +23,25 @@ from .anisette import Anisette
 from .device import Device
 from .headers import identity_headers
 from ..errors import AppleError
+from ..ratelimit import retry_after_seconds
 
 # Apple's SRP variant.
 srp.rfc5054_enable()
 srp.no_username_in_x()
 logger = logging.getLogger(__name__)
+
+# Apple answers with 429 when the sign-in rate is too high. That is the one
+# answer worth another try: the request was not processed, so sending it again
+# is safe. A 5xx is surfaced right away - it can mean the request was
+# processed after all, and retrying it would burn an attempt or push another
+# 2FA code.
+#
+# The window Apple throttles for is a couple of minutes, so the retries have to
+# outlast it: the delays are 10, 20, 40, 60, 60 seconds.
+RETRY_STATUS = (429,)
+RETRY_ATTEMPTS = 5
+RETRY_DELAY = 10.0           # seconds, doubles with every attempt
+RETRY_DELAY_MAX = 60.0       # cap
 
 
 class GSAError(AppleError):
@@ -58,6 +73,26 @@ class GSAClient:
         cpd.update(anisette_headers)
         return cpd
 
+    def _post(self, headers: dict, body: dict, operation: str):
+        """POST to GrandSlam, retrying a rate-limited answer."""
+        data = plist.dumps(body)
+        for attempt in range(RETRY_ATTEMPTS + 1):
+            resp = apple_tls.request_once(
+                "POST", const.GSA_ENDPOINT,
+                headers=headers, data=data, timeout=10,
+            )
+            if resp.status_code not in RETRY_STATUS or attempt == RETRY_ATTEMPTS:
+                return resp
+            delay = RETRY_DELAY * (2 ** attempt)
+            hint = retry_after_seconds(resp)
+            if hint:
+                delay = max(delay, hint)
+            delay = min(delay, RETRY_DELAY_MAX)
+            logger.warning("GSA %s answered HTTP %s, retrying in %.0f s",
+                           operation, resp.status_code, delay)
+            time.sleep(delay)
+        return resp
+
     def _request(self, parameters: dict, *, anisette_headers: dict) -> dict:
         anisette_headers = dict(anisette_headers)
         anisette_headers["X-Mme-Client-Info"] = self.anisette.client_info
@@ -75,10 +110,7 @@ class GSAClient:
             "X-MMe-Client-Info": self.anisette.client_info,
         }
         try:
-            resp = apple_tls.request_once(
-                "POST", const.GSA_ENDPOINT,
-                headers=headers, data=plist.dumps(body), timeout=10,
-            )
+            resp = self._post(headers, body, operation)
         except (requests.ConnectionError, requests.Timeout) as e:
             raise GSAServiceError(f"GSA {operation} request failed: {e}") from e
         except requests.RequestException as e:

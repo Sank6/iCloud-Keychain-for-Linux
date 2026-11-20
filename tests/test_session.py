@@ -82,8 +82,14 @@ class MasterKeyTests(unittest.TestCase):
         self.assertEqual(len(vault.load_vault()), 1)
 
         self._key_file().write_bytes(base64.b64encode(os.urandom(32)))
-        self.assertEqual(len(vault.load_vault()), 0)  # dropped, rebuilt by the next sync
+        self.assertEqual(len(vault.load_vault()), 0)   # cannot be read with this key
         self.assertEqual(hme.load_aliases(), [])
+        # ...but they are NOT thrown away: a master key that does not match usually
+        # means the keyring was unreachable (the browser spawns the native host
+        # without the session bus), not that the data is worthless. Deleting it
+        # would throw away the user's passwords.
+        self.assertTrue(vault.paths.vault_file().exists())
+        self.assertTrue(hme.paths.aliases_file().exists())
 
 
 if __name__ == "__main__":

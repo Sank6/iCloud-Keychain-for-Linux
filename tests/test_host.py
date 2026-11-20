@@ -36,6 +36,32 @@ class DomainMatchTests(unittest.TestCase):
     def test_empty(self):
         self.assertFalse(host.domains_match("", "example.com"))
 
+    def test_dotless_stored_domain_matches_nothing(self):
+        """A stored domain of "com" would otherwise fill on every .com page.
+
+        A dotted public suffix ("co.uk") would need the public suffix list to be caught
+        too; a keychain does not hold such a domain in practice.
+        """
+        self.assertFalse(host.domains_match("evil.com", "com"))
+        self.assertFalse(host.domains_match("login.example.com", "com"))
+
+
+class LabelOnlyMatchTests(unittest.TestCase):
+    """Entries that carry only a saved name, matched by name instead of by host."""
+
+    def test_the_registrable_label_matches(self):
+        self.assertTrue(host._name_matches_host("cloudflare.com", "Cloudflare"))
+        self.assertTrue(host._name_matches_host("www.cloudflare.com", "Cloudflare"))
+        self.assertTrue(host._name_matches_host("login.cloudflare.com", "Cloudflare"))
+
+    def test_a_label_of_the_host_is_not_enough(self):
+        """cloudflare.attacker.net must not be able to claim a "Cloudflare" entry."""
+        self.assertFalse(host._name_matches_host("cloudflare.attacker.net", "Cloudflare"))
+        self.assertFalse(host._name_matches_host("attacker.net", "Cloudflare"))
+
+    def test_generic_names_are_ignored(self):
+        self.assertFalse(host._name_matches_host("login.example.com", "My Account"))
+
 
 class StoreTests(unittest.TestCase):
     def setUp(self):

@@ -91,3 +91,31 @@ def test_machine_data_is_required(monkeypatch):
 
     with pytest.raises(AnisetteError, match="did not return"):
         Anisette(SERVER_URL).headers()
+
+
+def test_query_string_is_kept(monkeypatch):
+    """Servers can pick a backend with a query parameter, it has to survive."""
+    calls = []
+
+    def get(url, **kwargs):
+        calls.append(url)
+        return _Response({"X-Apple-I-MD": "otp", "X-Apple-I-MD-M": "machine"})
+
+    monkeypatch.setattr(requests, "get", get)
+    anisette = Anisette(f"{SERVER_URL}/?backend=macos")
+
+    anisette.headers()
+    assert calls == [f"{SERVER_URL}/?backend=macos"]
+
+    calls.clear()
+
+    def get_identity(url, **kwargs):
+        calls.append(url)
+        return _Response({
+            "client_info": "<Mac> <macOS;15.0> <com.apple.AuthKit/1 (com.apple.akd/1.0)>",
+            "user_agent": "akd/1.0",
+        })
+
+    monkeypatch.setattr(requests, "get", get_identity)
+    _ = anisette.client_info
+    assert calls == [f"{SERVER_URL}/v3/client_info?backend=macos"]
