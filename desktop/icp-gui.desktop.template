@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=iCloud Passwords
+GenericName=Password Manager
+Comment=Browse your iCloud Keychain passwords and verification codes
+Exec=__EXEC__
+Icon=dialog-password
+Terminal=false
+Categories=Utility;Security;Qt;
+Keywords=password;keychain;icloud;apple;2fa;totp;
+StartupWMClass=icp-gui

@@ -71,6 +71,26 @@ Opens a full-screen list - start typing to filter, **Enter** to reveal a passwor
 icp show github
 ```
 
+## Desktop app
+
+`icp-gui` is a desktop window over the same vault: search, copy, live verification codes, Wi-Fi
+networks, shared groups and Hide My Email addresses, with a **Sync now** button.
+
+![iCloud Passwords desktop app](docs/gui.png)
+
+Install it (Qt via PySide6) and add it to your application menu:
+
+```
+.venv/bin/pip install -e '.[gui]'
+desktop/install.sh
+```
+
+Run `desktop/install.sh` with `ICP_ANISETTE_URL` set, so **Sync now** works when the app is
+started from the menu. Copied passwords and codes are hidden from KDE's clipboard history and
+cleared after 30 seconds. Keyboard: **Ctrl+F** search, **Ctrl+C** copy password (from the
+list), **Ctrl+B** copy username, **Ctrl+T** copy code, **Ctrl+R** sync. Signing in stays in the
+terminal (`icp login`).
+
 ## Verification codes
 
 If a login has an authenticator code set up in the Passwords app, `icp` picks it up too. `icp show`
@@ -149,6 +169,8 @@ status   last sync, next allowed sync, whether a login is needed (--json)
 diag     read-only diagnostics: zones, groups (counts only, no secrets)
 logout   sign out (use --wipe-device to also forget this device)
 ```
+
+`icp-gui` opens the desktop app.
 
 ## Credits
 

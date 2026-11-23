@@ -15,8 +15,12 @@ dependencies = [
     "secretstorage>=3.3",
 ]
 
+[project.optional-dependencies]
+gui = ["PySide6-Essentials>=6.6"]
+
 [project.scripts]
 icp = "icp.cli.app:main"
+icp-gui = "icp.gui.app:main"
 
 [tool.setuptools.packages.find]
 include = ["icp*"]
