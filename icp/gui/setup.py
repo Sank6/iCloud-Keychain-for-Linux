@@ -22,20 +22,7 @@ OK, WARN, FAIL = "ok", "warn", "fail"
 DEFAULT_ANISETTE_URL = "http://127.0.0.1:6970"
 STALE_AFTER = 24 * 3600
 REPO = Path(__file__).resolve().parents[2]   # the source checkout, for host/ and desktop/
-NATIVE_HOST = "org.icp.native.json"
 _ICLOUD_AUTH_TOKEN = "com.apple.gs.icloud.auth"
-
-# Where browsers look for native-messaging manifests (see host/install.sh).
-BROWSER_HOST_DIRS = {
-    "Firefox": "~/.mozilla/native-messaging-hosts",
-    "Zen": "~/.zen/native-messaging-hosts",
-    "LibreWolf": "~/.librewolf/native-messaging-hosts",
-    "Chrome": "~/.config/google-chrome/NativeMessagingHosts",
-    "Chromium": "~/.config/chromium/NativeMessagingHosts",
-    "Brave": "~/.config/BraveSoftware/Brave-Browser/NativeMessagingHosts",
-    "Edge": "~/.config/microsoft-edge/NativeMessagingHosts",
-    "Helium": "~/.config/net.imput.helium/NativeMessagingHosts",
-}
 
 TERMINALS = (
     ("konsole", ["-e"]), ("gnome-terminal", ["--"]), ("kgx", ["--"]), ("kitty", []),
@@ -114,12 +101,6 @@ def probe_anisette(url: str, timeout: float = 3) -> tuple[bool, str]:
     if not isinstance(info, dict) or "client_info" not in info:
         return False, "answered, but without client_info"
     return True, "responding"
-
-
-def native_hosts() -> list[str]:
-    """Browsers with the icp native-messaging host registered."""
-    return [name for name, d in BROWSER_HOST_DIRS.items()
-            if (Path(d).expanduser() / NATIVE_HOST).exists()]
 
 
 def _data_home() -> Path:
@@ -314,14 +295,18 @@ def run_checks(anisette_url: str, now: float | None = None) -> list[Check]:
         checks.append(Check("keyring", "Secrets stored in your login keyring", OK,
                             "The vault key is kept in the Secret Service"))
 
-    # 10. Browser extension helper.
-    browsers = native_hosts()
-    install = REPO / "host" / "install.sh"
-    checks.append(Check("browser", "Browser autofill connected", OK if browsers else WARN,
-                        "Registered for " + ", ".join(browsers) if browsers else
-                        "Load the extension in your browser, then register the helper. "
-                        "Chromium-based browsers need the extension ID.",
-                        command="" if browsers else f"{shlex.quote(str(install))} <EXTENSION_ID>"))
+    # 10. Browser extension: added and connected in at least one browser.
+    from . import browsers
+    ready, found = browsers.any_connected()
+    if ready:
+        detail = f"Set up in {ready} of {found} browser{'s' if found != 1 else ''}"
+    elif found:
+        detail = f"Found {found} browser{'s' if found != 1 else ''}, but autofill isn't set up yet"
+    else:
+        detail = "No supported browser found"
+    checks.append(Check("browser", "Browser autofill", OK if ready else WARN, detail,
+                        action="" if ready else "open_extension",
+                        action_label="" if ready else "Set up"))
 
     # 11. App menu entry.
     has_launcher = launcher_file().exists()

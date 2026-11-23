@@ -31,7 +31,8 @@ def _stub(services=(), state=(False, False), probe=(True, "responding"), hosts=(
     return [mock.patch.object(setup, "anisette_services", return_value=list(services)),
             mock.patch.object(setup, "service_state", return_value=state),
             mock.patch.object(setup, "probe_anisette", return_value=probe),
-            mock.patch.object(setup, "native_hosts", return_value=list(hosts))]
+            mock.patch("icp.gui.browsers.any_connected",
+                       return_value=(len(hosts), len(hosts) + 1))]
 
 
 class ChecklistTests(_TempHome):
@@ -84,7 +85,9 @@ class ChecklistTests(_TempHome):
     def test_browser_and_launcher(self):
         checks = self.checks(hosts=["Zen"])
         self.assertEqual(checks["browser"].state, setup.OK)
-        self.assertIn("Zen", checks["browser"].detail)
+        self.assertIn("1 of 2", checks["browser"].detail)
+        missing = self.checks()["browser"]
+        self.assertEqual((missing.state, missing.action), (setup.WARN, "open_extension"))
         self.assertEqual(checks["launcher"].action, "install_launcher")
 
     def test_summary(self):

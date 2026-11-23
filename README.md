@@ -86,6 +86,11 @@ Install it (Qt via PySide6) and add it to your application menu:
 desktop/install.sh
 ```
 
+**Browser Extension** finds installed browsers (Firefox, Zen, LibreWolf, Floorp, Waterfox,
+Chrome, Chromium, Brave, Edge, Vivaldi, Opera, Helium and Thorium, including Flatpak and Snap
+installs), shows whether autofill is set up in each, and with **Install for selected** connects
+icp and opens each browser where the extension is added.
+
 **Settings** has a setup checklist (anisette server, sign-in, sync, keyring, browser
 helper, menu entry) with one-click fixes or a command to copy, plus the theme (automatic,
 light or dark), how long copied passwords stay on the clipboard, the anisette server address,

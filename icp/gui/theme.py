@@ -128,6 +128,16 @@ QComboBox {
 }
 QComboBox QAbstractItemView { background: $base; border: 1px solid $border; selection-background-color: $accent; }
 
+QLabel#chip { border-radius: 9px; padding: 2px 9px; font-size: 9pt; font-weight: 600; }
+QLabel#chip[state="ok"] { background: rgba(48,209,88,0.16); color: $good; }
+QLabel#chip[state="warn"] { background: rgba(255,159,10,0.16); color: $warn; }
+QLabel#chip[state="fail"] { background: rgba(255,69,58,0.14); color: #ff453a; }
+QCheckBox::indicator {
+    width: 18px; height: 18px; border-radius: 5px; border: 2px solid $border; background: $base;
+}
+QCheckBox::indicator:checked { background: $accent; border-color: $accent; }
+QCheckBox::indicator:disabled { background: $field; }
+
 QLabel#toast {
     background: $toast; color: $toast_text; border-radius: 10px; padding: 8px 16px;
     font-weight: 600;

@@ -407,10 +407,16 @@ class MainWindow(QMainWindow):
         self.sync_button.setIcon(icon("view-refresh"))
         self.sync_button.clicked.connect(self.start_sync)
         sl.addWidget(self.sync_button)
+        self.extension_button = pill("Browser Extension", "Set up autofill in your browsers",
+                                     checkable=True)
+        self.extension_button.setIcon(icon("internet-web-browser", "applications-internet"))
+        self.extension_button.clicked.connect(
+            lambda on: self.show_page("extension") if on else self.show_passwords())
+        sl.addWidget(self.extension_button)
         self.settings_button = pill("Settings", "Settings and setup checklist", checkable=True)
         self.settings_button.setIcon(icon("configure", "settings", "preferences-system"))
         self.settings_button.clicked.connect(
-            lambda on: self.show_settings() if on else self.show_passwords())
+            lambda on: self.show_page("settings") if on else self.show_passwords())
         sl.addWidget(self.settings_button)
 
         # --- list: search, heading, entries ---
@@ -455,12 +461,16 @@ class MainWindow(QMainWindow):
         inner.setStretchFactor(1, 1)
         inner.setSizes([330, 560])
         self.inner_splitter = inner
+        from .extension_page import ExtensionPage
         from .settings import SettingsPage
         self.settings_page = SettingsPage(self)
         self.settings_scroll = _scroll_page(self.settings_page)
+        self.extension_page = ExtensionPage(self)
+        self.extension_scroll = _scroll_page(self.extension_page)
         self.content = QStackedWidget()
         self.content.addWidget(inner)
         self.content.addWidget(self.settings_scroll)
+        self.content.addWidget(self.extension_scroll)
 
         split = QSplitter(childrenCollapsible=False)
         split.addWidget(side)
@@ -505,16 +515,26 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(300, self.settings_page.refresh)  # flags setup problems in the sidebar
 
     # --- pages and preferences ---
-    def show_settings(self) -> None:
-        self.settings_button.setChecked(True)
+    def show_page(self, name: str) -> None:
+        """Switch from the password list to the Settings or Browser Extension page."""
+        self.settings_button.setChecked(name == "settings")
+        self.extension_button.setChecked(name == "extension")
         self.sections.blockSignals(True)
         self.sections.setCurrentRow(-1)
         self.sections.blockSignals(False)
-        self.content.setCurrentWidget(self.settings_scroll)
-        self.settings_page.refresh()
+        if name == "settings":
+            self.content.setCurrentWidget(self.settings_scroll)
+            self.settings_page.refresh()
+        else:
+            self.content.setCurrentWidget(self.extension_scroll)
+            self.extension_page.ensure_scanned()
+
+    def show_settings(self) -> None:
+        self.show_page("settings")
 
     def show_passwords(self) -> None:
         self.settings_button.setChecked(False)
+        self.extension_button.setChecked(False)
         if self.sections.currentRow() < 0:
             self.sections.blockSignals(True)
             self.sections.setCurrentRow(0)

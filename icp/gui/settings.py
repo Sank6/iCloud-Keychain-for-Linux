@@ -292,6 +292,9 @@ class SettingsPage(QWidget):
         elif action == "sync":
             self._w.start_sync()
             return
+        elif action == "open_extension":
+            self._w.show_page("extension")
+            return
         elif action == "login":
             argv = setup.terminal_argv(setup.login_command(url))
             if argv is None:
