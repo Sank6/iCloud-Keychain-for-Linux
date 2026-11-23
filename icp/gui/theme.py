@@ -138,6 +138,13 @@ QCheckBox::indicator {
 QCheckBox::indicator:checked { background: $accent; border-color: $accent; }
 QCheckBox::indicator:disabled { background: $field; }
 
+QDialog { background: $window; }
+QLabel#stepNum {
+    background: $accent; color: $accent_text; border-radius: 12px; font-weight: 700;
+    min-width: 24px; max-width: 24px; min-height: 24px; max-height: 24px;
+}
+QLabel#stepNum[done="true"] { background: $good; }
+
 QLabel#toast {
     background: $toast; color: $toast_text; border-radius: 10px; padding: 8px 16px;
     font-weight: 600;

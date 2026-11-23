@@ -128,8 +128,9 @@ class PageArgvTests(_FakeHome):
                          self.home)
         zen = b.Install(ZEN, b.SYSTEM, ("zen",), self.home)
         st = b.Status("missing", "", False, True, False)
-        self.assertEqual(b.extensions_page_argv(chrome, st), ["google-chrome", "chrome://extensions"])
-        self.assertEqual(b.extensions_page_argv(edge, st)[-1], "edge://extensions")
+        # chrome:// URLs from the command line are refused, so only the browser is opened.
+        self.assertEqual(b.extensions_page_argv(chrome, st), ["google-chrome", "--new-window"])
+        self.assertEqual(b.extensions_url(edge), "edge://extensions")
         self.assertEqual(b.extensions_page_argv(zen, st)[-1], "about:debugging#/runtime/this-firefox")
         xpi = b.extensions_page_argv(zen, b.Status("missing", "", False, True, True))[-1]
         self.assertTrue(xpi.endswith(".xpi") and Path(xpi).exists())

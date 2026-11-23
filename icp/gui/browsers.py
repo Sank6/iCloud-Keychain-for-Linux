@@ -324,13 +324,19 @@ def build_xpi() -> Path:
     return out
 
 
+def extensions_url(inst: Install) -> str:
+    return f"{inst.spec.scheme}://extensions"
+
+
 def extensions_page_argv(inst: Install, st: Status) -> list[str]:
-    """argv that opens the place to add the extension: the extensions page (Chromium), the
-    .xpi install prompt (Firefox forks allowing unsigned add-ons) or about:debugging."""
+    """argv that opens the place to add the extension: the .xpi install prompt (Firefox forks
+    allowing unsigned add-ons) or about:debugging. Chromium-family browsers refuse to open
+    chrome:// pages handed to them by another program (they show a new tab instead), so for
+    those this only brings the browser up and the user pastes `extensions_url` themselves."""
     if not inst.launch:
         return []
     if inst.spec.family == CHROMIUM:
-        return [*inst.launch, f"{inst.spec.scheme}://extensions"]
+        return [*inst.launch, "--new-window"]
     if st.unsigned_ok:
         return [*inst.launch, str(build_xpi())]
     return [*inst.launch, "about:debugging#/runtime/this-firefox"]
@@ -344,8 +350,8 @@ def next_step(inst: Install, st: Status) -> str:
         return f"The extension is turned off - enable it on {inst.spec.name}'s extensions page."
     if st.extension == "missing":
         if inst.spec.family == CHROMIUM:
-            return ("On the extensions page, turn on Developer mode, click Load unpacked and "
-                    f"choose {EXTENSION_DIR}. Then scan again.")
+            return (f"Click Add extension for step-by-step help: open {extensions_url(inst)}, "
+                    f"turn on Developer mode, click Load unpacked and choose {EXTENSION_DIR}.")
         if st.unsigned_ok:
             return "Click Add in the install prompt, then scan again."
         return ("Click Load Temporary Add-on and choose "

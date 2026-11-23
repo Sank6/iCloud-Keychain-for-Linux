@@ -7,8 +7,8 @@ import subprocess
 
 from PySide6.QtCore import QTimer, QUrl, Qt
 from PySide6.QtGui import QDesktopServices, QGuiApplication
-from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel, QMessageBox, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QMessageBox,
+                               QVBoxLayout, QWidget)
 
 from . import browsers, theme
 from .browsers import CHROMIUM, FLATPAK
@@ -21,8 +21,107 @@ def _chip(text: str, state: str) -> QLabel:
     return chip
 
 
+class _AddExtensionDialog(QDialog):
+    """Step-by-step help for loading the unpacked extension into a Chromium-family browser,
+    which can't be automated: those browsers refuse chrome:// pages opened by other programs.
+    Watches the profile and ticks itself off once the extension shows up."""
+
+    def __init__(self, inst: browsers.Install, page: "ExtensionPage"):
+        super().__init__(page)
+        self.inst, self._page = inst, page
+        self.setWindowTitle(f"Add the extension to {inst.spec.name}")
+        self.setMinimumWidth(560)
+        col = QVBoxLayout(self)
+        col.setContentsMargins(24, 22, 24, 18)
+        col.setSpacing(14)
+        col.addWidget(QLabel(f"Add the extension to {inst.label}", objectName="pageTitle"))
+        col.addWidget(QLabel(f"{inst.spec.name} doesn't let other apps open its extensions page, "
+                             "so this takes four quick steps. This window notices when "
+                             "you're done.", objectName="checkDetail", wordWrap=True))
+        url = browsers.extensions_url(inst)
+        folder = str(browsers.EXTENSION_DIR)
+        card = Card()
+        steps = [
+            (f"Open {inst.spec.name}", "", "Open", lambda: self._launch()),
+            ("Paste this into the address bar", url, "Copy",
+             lambda: page.copy(url, "Address")),
+            ("Turn on Developer mode", "The switch is in the top-right corner of the page.",
+             "", None),
+            ("Click Load unpacked and choose this folder", folder, "Copy",
+             lambda: page.copy(folder, "Folder path")),
+        ]
+        self._nums = []
+        for i, (title, detail, button, slot) in enumerate(steps, 1):
+            row = QFrame(objectName="row")
+            lay = QHBoxLayout(row)
+            lay.setContentsMargins(14, 10, 12, 10)
+            lay.setSpacing(12)
+            num = QLabel(str(i), objectName="stepNum", alignment=Qt.AlignCenter)
+            self._nums.append(num)
+            lay.addWidget(num, 0, Qt.AlignTop)
+            text = QVBoxLayout()
+            text.setSpacing(3)
+            text.addWidget(QLabel(title, objectName="checkTitle"))
+            if detail:
+                mono = detail in (url, folder)
+                d = QLabel(detail, objectName="command" if mono else "checkDetail",
+                           wordWrap=True, textFormat=Qt.PlainText,
+                           textInteractionFlags=Qt.TextSelectableByMouse)
+                text.addWidget(d)
+            if i == 4:
+                text.addWidget(QLabel("In the file picker, press Ctrl+L and paste the path.",
+                                      objectName="checkDetail"))
+            lay.addLayout(text, 1)
+            if button:
+                b = pill(button, "", accent=(i == 1))
+                b.clicked.connect(slot)
+                lay.addWidget(b, 0, Qt.AlignTop)
+            card.add(row)
+        card.show_rows({})
+        col.addWidget(card)
+        col.addStretch(1)
+
+        bottom = QHBoxLayout()
+        self.state = QLabel("Waiting for the extension…", objectName="summary")
+        self.state.setProperty("state", "warn")
+        bottom.addWidget(self.state, 1)
+        self.done = pill("Close", "")
+        self.done.clicked.connect(self.accept)
+        bottom.addWidget(self.done)
+        col.addLayout(bottom)
+
+        self._poll = QTimer(self, interval=2000, timeout=self._check)
+        self._poll.start()
+        page.copy(url, "Address")  # step 2 is ready to paste as soon as the browser is up
+
+    def _launch(self) -> None:
+        ok, err = browsers.launch(browsers.extensions_page_argv(self.inst, browsers.status(self.inst)))
+        if not ok:
+            self._page._w.toast.show_message(f"Couldn't open {self.inst.label}: {err}", 5000)
+
+    def _check(self) -> None:
+        st = browsers.status(self.inst)
+        if st.extension != "installed":
+            if st.extension == "disabled":
+                self.state.setText("The extension is added but turned off - switch it on")
+            return
+        if not st.host:  # loaded from elsewhere, so the real ID differs from the predicted one
+            browsers.register_host(self.inst, self._page._w.anisette_url, st.ext_id)
+        self._poll.stop()
+        for n in self._nums:
+            n.setProperty("done", True)
+            repolish(n)
+        self.state.setText("✓ Added and connected - reload any open login pages")
+        self.state.setProperty("state", "ok")
+        repolish(self.state)
+        self.done.setText("Done")
+        self.done.setObjectName("pillAccent")
+        repolish(self.done)
+
+
 class _BrowserRow(QFrame):
-    def __init__(self, inst: browsers.Install, st: browsers.Status, page: "ExtensionPage"):
+    def __init__(self, inst: browsers.Install, st: browsers.Status, page: "ExtensionPage",
+                 picked: bool | None = None):
         super().__init__(objectName="row")
         self.inst, self.st = inst, st
         ready = st.extension == "installed" and st.host and st.sandbox_ok
@@ -31,8 +130,10 @@ class _BrowserRow(QFrame):
         lay.setSpacing(12)
 
         self.pick = QCheckBox(cursor=Qt.PointingHandCursor, toolTip="Include in Install")
-        self.pick.setChecked(not ready and bool(inst.launch))
+        # Keep the user's choice across rescans; default to the browsers that need setting up.
+        self.pick.setChecked((not ready and bool(inst.launch)) if picked is None else picked)
         self.pick.setEnabled(bool(inst.launch) or inst.spec.family == CHROMIUM)
+        self.pick.toggled.connect(lambda on: page._picks.__setitem__(inst.key, on))
         lay.addWidget(self.pick, 0, Qt.AlignTop)
         avatar = QLabel()
         avatar.setPixmap(theme.avatar_pixmap(inst.spec.name, inst.spec.key, 36,
@@ -67,9 +168,10 @@ class _BrowserRow(QFrame):
 
         buttons = QVBoxLayout()
         buttons.setSpacing(6)
-        if inst.launch and not ready:
-            b = pill("Open extensions" if inst.spec.family == CHROMIUM or not st.unsigned_ok
-                     else "Install add-on", "Open the place to add the extension in this browser")
+        if inst.launch and st.extension != "installed":
+            label = ("Add extension…" if inst.spec.family == CHROMIUM else
+                     "Install add-on" if st.unsigned_ok else "Open add-ons page")
+            b = pill(label, "Add the extension in this browser")
             b.clicked.connect(lambda: page.open_page(self))
             buttons.addWidget(b)
         if inst.kind == FLATPAK and not st.sandbox_ok:
@@ -89,6 +191,7 @@ class ExtensionPage(QWidget):
         super().__init__()
         self._w = window
         self._rows: list[_BrowserRow] = []
+        self._picks: dict[str, bool] = {}
         col = QVBoxLayout(self)
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(10)
@@ -159,7 +262,7 @@ class ExtensionPage(QWidget):
         for inst in installs:
             st = browsers.status(inst)
             ready += st.extension == "installed" and st.host and st.sandbox_ok
-            row = _BrowserRow(inst, st, self)
+            row = _BrowserRow(inst, st, self, self._picks.get(inst.key))
             self._rows.append(row)
             self.card.add(row)
         self.card.show_rows({})
@@ -183,7 +286,7 @@ class ExtensionPage(QWidget):
         if not picked:
             self._w.toast.show_message("Tick the browsers to set up first")
             return
-        notes, opened = [], 0
+        notes, opened, guides = [], 0, []
         for r in picked:
             inst, st = r.inst, r.st
             try:
@@ -196,7 +299,9 @@ class ExtensionPage(QWidget):
             if inst.kind == FLATPAK and not st.sandbox_ok:
                 notes.append(f"{inst.label}: also needs sandbox access (Allow…)")
             if st.extension != "installed" and inst.launch:
-                if self._open(r):
+                if inst.spec.family == CHROMIUM:
+                    guides.append(inst)
+                elif self._open(r):
                     opened += 1
         msg = f"Connected icp in {len(picked)} browser{'s' if len(picked) > 1 else ''}"
         if opened:
@@ -204,6 +309,8 @@ class ExtensionPage(QWidget):
         self._w.toast.show_message(msg, 5000)
         if notes:
             QMessageBox.information(self, "Almost done", "\n".join(notes))
+        for inst in guides:  # one at a time: each needs a few clicks in that browser
+            _AddExtensionDialog(inst, self).exec()
         self.scan()
 
     def _open(self, row: _BrowserRow) -> bool:
@@ -216,17 +323,18 @@ class ExtensionPage(QWidget):
             self._w.toast.show_message(f"Couldn't open {inst.label}: {err}", 5000)
             return False
         # Have the path ready for the file picker that comes next.
-        if inst.spec.family == CHROMIUM:
-            QGuiApplication.clipboard().setText(str(browsers.EXTENSION_DIR))
-        elif not st.unsigned_ok:
+        if inst.spec.family != CHROMIUM and not st.unsigned_ok:
             QGuiApplication.clipboard().setText(str(browsers.EXTENSION_DIR / "manifest.json"))
         return True
 
     def open_page(self, row: _BrowserRow) -> None:
+        if row.inst.spec.family == CHROMIUM:
+            browsers.register_host(row.inst, self._w.anisette_url, row.st.ext_id)
+            _AddExtensionDialog(row.inst, self).exec()
+            self.scan()
+            return
         if self._open(row):
-            hint = ("folder path copied - paste it in the Load unpacked dialog"
-                    if row.inst.spec.family == CHROMIUM else
-                    "click Add in the prompt" if row.st.unsigned_ok else
+            hint = ("click Add in the prompt" if row.st.unsigned_ok else
                     "manifest path copied - paste it in the file dialog")
             self._w.toast.show_message(f"Opened {row.inst.label} · {hint}", 5000)
         QTimer.singleShot(8000, self.scan)
