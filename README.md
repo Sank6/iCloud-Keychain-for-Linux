@@ -71,6 +71,34 @@ Opens a full-screen list - start typing to filter, **Enter** to reveal a passwor
 icp show github
 ```
 
+## Desktop app
+
+`icp-gui` is a desktop window over the same vault: search, copy, live verification codes, Wi-Fi
+networks, shared groups and Hide My Email addresses, with a **Sync now** button. Click a field
+to copy it. The app follows the system light or dark setting.
+
+![iCloud Passwords desktop app](docs/gui.png)
+
+Install it (Qt via PySide6) and add it to your application menu:
+
+```
+.venv/bin/pip install -e '.[gui]'
+desktop/install.sh
+```
+
+**Browser Extension** finds installed browsers (Firefox, Zen, LibreWolf, Floorp, Waterfox,
+Chrome, Chromium, Brave, Edge, Vivaldi, Opera, Helium and Thorium, including Flatpak and Snap
+installs), shows whether autofill is set up in each, and with **Install for selected** connects
+icp and opens each browser where the extension is added.
+
+**Settings** has a setup checklist (anisette server, sign-in, sync, keyring, browser
+helper, menu entry) with one-click fixes or a command to copy, plus the theme (automatic,
+light or dark), how long copied passwords stay on the clipboard, the anisette server address,
+and switches to start the anisette service and the app at login. Copied passwords and codes are hidden from KDE's clipboard history and
+cleared after 30 seconds. Keyboard: **Ctrl+F** search, **Ctrl+C** copy password (from the
+list), **Ctrl+B** copy username, **Ctrl+T** copy code, **Ctrl+R** sync. Signing in stays in the
+terminal (`icp login`).
+
 ## Verification codes
 
 If a login has an authenticator code set up in the Passwords app, `icp` picks it up too. `icp show`
@@ -149,6 +177,8 @@ status   last sync, next allowed sync, whether a login is needed (--json)
 diag     read-only diagnostics: zones, groups (counts only, no secrets)
 logout   sign out (use --wipe-device to also forget this device)
 ```
+
+`icp-gui` opens the desktop app.
 
 ## Credits
 
