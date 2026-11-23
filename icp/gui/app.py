@@ -7,11 +7,13 @@ Needs PySide6: pip install -e '.[gui]'"""
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 
 try:
-    from PySide6.QtCore import QMimeData, QProcess, QRectF, QSettings, QSize, Qt, QTimer, QUrl
+    from PySide6.QtCore import (QMimeData, QProcess, QProcessEnvironment, QRectF, QSettings, QSize,
+                                Qt, QTimer, QUrl)
     from PySide6.QtGui import (QAction, QColor, QDesktopServices, QFont, QFontDatabase,
                                QGuiApplication, QIcon, QKeySequence, QPainter, QPainterPath,
                                QPen)
@@ -28,6 +30,7 @@ except ImportError:  # pragma: no cover - reported by main()
 from .. import paths
 from ..totp import generate as totp_generate
 from . import model
+from .widgets import Card, Row, Switch, icon, pill, repolish, rounded
 
 APP_ID = "icp-gui"
 CLIPBOARD_CLEAR_SECONDS = 30
@@ -40,32 +43,6 @@ _SECTION_ICONS = {"all": ("dialog-password", "lock"), "codes": ("clock", "chrono
                   "shared": ("system-users", "user-group-new"),
                   "wifi": ("network-wireless", "network-wireless-symbolic"),
                   "hme": ("mail-message", "mail-unread")}
-
-
-def _icon(*names: str) -> "QIcon":
-    for name in names:
-        icon = QIcon.fromTheme(name)
-        if not icon.isNull():
-            return icon
-    return QIcon()
-
-
-def _repolish(w: "QWidget") -> None:
-    w.style().unpolish(w)
-    w.style().polish(w)
-
-
-def _pill(text: str, tip: str = "", accent: bool = False, checkable: bool = False):
-    b = QPushButton(text, objectName="pillAccent" if accent else "pill", toolTip=tip,
-                    checkable=checkable, cursor=Qt.PointingHandCursor)
-    b.setFocusPolicy(Qt.NoFocus)  # keep keyboard focus in the list
-    return b
-
-
-def _rounded(painter: "QPainter", rect: "QRectF", color: "QColor", radius: float = 8) -> None:
-    path = QPainterPath()
-    path.addRoundedRect(rect, radius, radius)
-    painter.fillPath(path, color)
 
 
 class _SidebarDelegate(QStyledItemDelegate):
@@ -85,11 +62,11 @@ class _SidebarDelegate(QStyledItemDelegate):
         rect = QRectF(option.rect).adjusted(2, 1, -2, -1)
         selected = bool(option.state & QStyle.State_Selected)
         if selected:
-            _rounded(painter, rect, QColor(t["accent"]))
+            rounded(painter, rect, QColor(t["accent"]))
         elif option.state & QStyle.State_MouseOver:
             hover = QColor(t["text"])
             hover.setAlpha(16)
-            _rounded(painter, rect, hover)
+            rounded(painter, rect, hover)
         fg = QColor(t["accent_text"] if selected else t["text"])
         icon = index.data(Qt.DecorationRole)
         x = rect.left() + 10
@@ -125,7 +102,7 @@ class _EntryDelegate(QStyledItemDelegate):
         rect = QRectF(option.rect).adjusted(2, 1, -2, -1)
         selected = bool(option.state & QStyle.State_Selected)
         if selected:
-            _rounded(painter, rect, QColor(t["accent"]))
+            rounded(painter, rect, QColor(t["accent"]))
         title = index.data(Qt.DisplayRole) or ""
         theme.paint_avatar(painter, QRectF(rect.left() + 10, rect.center().y() - 16, 32, 32),
                            title, index.data(_KEY_ROLE) or title)
@@ -172,97 +149,6 @@ class _Ring(QWidget):
         pen.setCapStyle(Qt.RoundCap)
         p.setPen(pen)
         p.drawArc(r, 90 * 16, int(-360 * 16 * self._left / self._period))
-
-
-class _Row(QFrame):
-    """One field in a card: caption over value, trailing buttons. A clickable row runs
-    `on_click` (copy, mostly) and briefly shows a confirmation in its caption."""
-
-    def __init__(self, caption: str, on_click=None, tip: str = "", mono: bool = False,
-                 wrap: bool = False):
-        super().__init__(objectName="row")
-        self._caption, self._on_click = caption, on_click
-        self.setProperty("clickable", on_click is not None)
-        if on_click:
-            self.setCursor(Qt.PointingHandCursor)
-            self.setAttribute(Qt.WA_Hover)
-            self.setToolTip(tip)
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(16, 10, 12, 10)
-        lay.setSpacing(8)
-        col = QVBoxLayout()
-        col.setSpacing(2)
-        self.caption = QLabel(caption, objectName="caption")
-        self.value = QLabel(objectName="value", textFormat=Qt.PlainText, wordWrap=wrap)
-        self.value.setSizePolicy(QSizePolicy.Ignored if not wrap else QSizePolicy.Preferred,
-                                 QSizePolicy.Preferred)
-        if mono:
-            f = QFontDatabase.systemFont(QFontDatabase.FixedFont)
-            f.setPointSizeF(self.value.font().pointSizeF() * 1.15)
-            self.value.setFont(f)
-        if wrap:
-            self.value.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        col.addWidget(self.caption)
-        col.addWidget(self.value)
-        lay.addLayout(col, 1)
-        self._lay = lay
-
-    def add(self, w: "QWidget") -> "QWidget":
-        self._lay.addWidget(w, 0, Qt.AlignVCenter)
-        return w
-
-    def mouseReleaseEvent(self, e):
-        if (self._on_click and e.button() == Qt.LeftButton
-                and self.rect().contains(e.position().toPoint())):
-            self._on_click()
-        super().mouseReleaseEvent(e)
-
-    def flash(self, text: str = "Copied") -> None:
-        self.caption.setText(f"✓  {text}")
-        self.caption.setProperty("flash", True)
-        _repolish(self.caption)
-        QTimer.singleShot(1500, self._unflash)
-
-    def _unflash(self) -> None:
-        self.caption.setText(self._caption)
-        self.caption.setProperty("flash", False)
-        _repolish(self.caption)
-
-
-class _Card(QFrame):
-    """A rounded group of rows with hairlines between the visible ones."""
-
-    def __init__(self):
-        super().__init__(objectName="card")
-        self._lay = QVBoxLayout(self)
-        self._lay.setContentsMargins(0, 0, 0, 0)
-        self._lay.setSpacing(0)
-        self._rows: list[tuple[QFrame | None, _Row]] = []
-
-    def add(self, row: _Row) -> _Row:
-        sep = None
-        if self._rows:
-            sep = QFrame(objectName="sep")
-            self._lay.addWidget(sep)
-        self._lay.addWidget(row)
-        self._rows.append((sep, row))
-        return row
-
-    def show_rows(self, visible: dict) -> None:
-        """`visible` maps rows to whether they show; unlisted rows keep showing."""
-        shown = []
-        for sep, row in self._rows:
-            on = visible.get(row, True)
-            row.setVisible(on)
-            if sep is not None:
-                sep.setVisible(on and bool(shown))
-            if on:
-                shown.append(row)
-        for row in shown:
-            row.setProperty("first", row is shown[0])
-            row.setProperty("last", row is shown[-1])
-            _repolish(row)
-        self.setVisible(bool(shown))
 
 
 class _Header(QWidget):
@@ -322,40 +208,45 @@ class CredentialView(QWidget):
         self.header = _Header()
         col.addWidget(self.header)
 
-        self.card = _Card()
-        self.user = self.card.add(_Row("User name", self.copy_username, "Click to copy"))
-        self.user.add(_pill("Copy", "Copy user name (Ctrl+B)")).clicked.connect(self.copy_username)
+        self.card = Card()
+        self.user = self.card.add(Row("User name", self.copy_username, "Click to copy"))
+        self.user.add(pill("Copy", "Copy user name (Ctrl+B)")).clicked.connect(self.copy_username)
 
-        self.password = self.card.add(_Row("Password", self.copy_password, "Click to copy",
+        self.password = self.card.add(Row("Password", self.copy_password, "Click to copy",
                                            mono=True))
-        self.reveal = self.password.add(_pill("Show", "Show or hide the password",
+        self.reveal = self.password.add(pill("Show", "Show or hide the password",
                                               checkable=True))
         self.reveal.toggled.connect(self._set_revealed)
-        self.password.add(_pill("Copy", "Copy password (Ctrl+C)", accent=True)
+        self.password.add(pill("Copy", "Copy password (Ctrl+C)", accent=True)
                           ).clicked.connect(self.copy_password)
 
-        self.code = self.card.add(_Row("Verification code", self.copy_code, "Click to copy",
+        self.code = self.card.add(Row("Verification code", self.copy_code, "Click to copy",
                                        mono=True))
         self.ring = self.code.add(_Ring(window))
-        self.code.add(_pill("Copy", "Copy verification code (Ctrl+T)")).clicked.connect(self.copy_code)
+        self.code.add(pill("Copy", "Copy verification code (Ctrl+T)")).clicked.connect(self.copy_code)
 
-        self.site = self.card.add(_Row("Website", self.open_site, "Open in your browser"))
-        self.site.add(_pill("Open", "Open in your browser")).clicked.connect(self.open_site)
+        self.site = self.card.add(Row("Website", self.open_site, "Open in your browser"))
+        self.site.add(pill("Open", "Open in your browser")).clicked.connect(self.open_site)
         col.addWidget(self.card)
 
-        self.meta = _Card()
-        self.group = self.meta.add(_Row("Shared group"))
-        self.modified = self.meta.add(_Row("Last modified"))
+        self.meta = Card()
+        self.group = self.meta.add(Row("Shared group"))
+        self.modified = self.meta.add(Row("Last modified"))
         col.addWidget(self.meta)
 
-        self.notes_card = _Card()
-        self.notes = self.notes_card.add(_Row("Notes", wrap=True))
+        self.notes_card = Card()
+        self.notes = self.notes_card.add(Row("Notes", wrap=True))
         col.addWidget(self.notes_card)
 
-        col.addWidget(QLabel(f"Click a field to copy it. Copied passwords and codes are cleared "
-                             f"from the clipboard after {CLIPBOARD_CLEAR_SECONDS} seconds.",
-                             objectName="hint", wordWrap=True))
+        self.hint = QLabel(objectName="hint", wordWrap=True)
+        col.addWidget(self.hint)
+        self.set_clear_seconds(window.clipboard_seconds)
         col.addStretch(1)
+
+    def set_clear_seconds(self, seconds: int) -> None:
+        self.hint.setText("Click a field to copy it." + (
+            f" Copied passwords and codes are cleared from the clipboard after {seconds} seconds."
+            if seconds else ""))
 
     def show_credential(self, c) -> None:
         self._cred = c
@@ -428,16 +319,16 @@ class AliasView(QWidget):
         col.setSpacing(18)
         self.header = _Header()
         col.addWidget(self.header)
-        self.card = _Card()
-        self.address = self.card.add(_Row("Address", self.copy_address, "Click to copy"))
-        self.address.add(_pill("Copy", "Copy address (Ctrl+C)", accent=True)
+        self.card = Card()
+        self.address = self.card.add(Row("Address", self.copy_address, "Click to copy"))
+        self.address.add(pill("Copy", "Copy address (Ctrl+C)", accent=True)
                          ).clicked.connect(self.copy_address)
-        self.forward = self.card.add(_Row("Forwards to"))
-        self.state = self.card.add(_Row("Status"))
-        self.domain = self.card.add(_Row("Created for"))
+        self.forward = self.card.add(Row("Forwards to"))
+        self.state = self.card.add(Row("Status"))
+        self.domain = self.card.add(Row("Created for"))
         col.addWidget(self.card)
-        self.note_card = _Card()
-        self.note = self.note_card.add(_Row("Note", wrap=True))
+        self.note_card = Card()
+        self.note = self.note_card.add(Row("Note", wrap=True))
         col.addWidget(self.note_card)
         col.addStretch(1)
 
@@ -479,9 +370,17 @@ class _Toast(QLabel):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.t = theme.tokens()
+        self.prefs = QSettings("icp", APP_ID)
+        self.theme_mode = str(self.prefs.value("theme", "auto"))
+        if self.theme_mode not in theme.MODES:
+            self.theme_mode = "auto"
+        self.clipboard_seconds = int(self.prefs.value("clipboard_seconds",
+                                                      CLIPBOARD_CLEAR_SECONDS))
+        self.anisette_url = str(self.prefs.value("anisette_url", "")
+                                or os.environ.get("ICP_ANISETTE_URL", ""))
+        self.t = theme.apply(QApplication.instance(), self.theme_mode)
         self.setWindowTitle("iCloud Passwords")
-        self.setWindowIcon(_icon("dialog-password", "password-manager", "keepassxc"))
+        self.setWindowIcon(icon("dialog-password", "password-manager", "keepassxc"))
         self.creds, self.aliases, self._vault_mtime = [], [], None
         self._clip_text, self._sync = None, None
 
@@ -496,17 +395,23 @@ class MainWindow(QMainWindow):
         self.sections.setItemDelegate(_SidebarDelegate(self))
         self.sections.setMouseTracking(True)
         for key, label in model.SECTIONS:
-            item = QListWidgetItem(_icon(*_SECTION_ICONS[key]), label)
+            item = QListWidgetItem(icon(*_SECTION_ICONS[key]), label)
             item.setData(_ITEM_ROLE, key)
             self.sections.addItem(item)
-        self.sections.currentRowChanged.connect(lambda _: self.refresh_list())
+        self.sections.currentRowChanged.connect(lambda _: self.show_passwords())
+        self.sections.itemPressed.connect(lambda _: self.show_passwords())
         sl.addWidget(self.sections, 1)
         self.status = QLabel(objectName="syncStatus", wordWrap=True)
         sl.addWidget(self.status)
-        self.sync_button = _pill("Sync now", "Fetch new and changed passwords from iCloud (Ctrl+R)")
-        self.sync_button.setIcon(_icon("view-refresh"))
+        self.sync_button = pill("Sync now", "Fetch new and changed passwords from iCloud (Ctrl+R)")
+        self.sync_button.setIcon(icon("view-refresh"))
         self.sync_button.clicked.connect(self.start_sync)
         sl.addWidget(self.sync_button)
+        self.settings_button = pill("Settings", "Settings and setup checklist", checkable=True)
+        self.settings_button.setIcon(icon("configure", "settings", "preferences-system"))
+        self.settings_button.clicked.connect(
+            lambda on: self.show_settings() if on else self.show_passwords())
+        sl.addWidget(self.settings_button)
 
         # --- list: search, heading, entries ---
         middle = QWidget(objectName="listPane")
@@ -516,7 +421,7 @@ class MainWindow(QMainWindow):
         ml.setSpacing(10)
         self.search = QLineEdit(objectName="search", placeholderText="Search",
                                 clearButtonEnabled=True)
-        if not (find := _icon("edit-find", "search")).isNull():
+        if not (find := icon("edit-find", "search")).isNull():
             self.search.addAction(find, QLineEdit.LeadingPosition)
         self.search.textChanged.connect(self.refresh_list)
         self.search.returnPressed.connect(self._focus_list)
@@ -544,11 +449,24 @@ class MainWindow(QMainWindow):
         for w in (self.empty, self.cred_page, self.alias_page):
             self.detail.addWidget(w)
 
+        inner = QSplitter(childrenCollapsible=False)
+        inner.addWidget(middle)
+        inner.addWidget(self.detail)
+        inner.setStretchFactor(1, 1)
+        inner.setSizes([330, 560])
+        self.inner_splitter = inner
+        from .settings import SettingsPage
+        self.settings_page = SettingsPage(self)
+        self.settings_scroll = _scroll_page(self.settings_page)
+        self.content = QStackedWidget()
+        self.content.addWidget(inner)
+        self.content.addWidget(self.settings_scroll)
+
         split = QSplitter(childrenCollapsible=False)
-        for w in (side, middle, self.detail):
-            split.addWidget(w)
-        split.setStretchFactor(2, 1)
-        split.setSizes([220, 330, 560])
+        split.addWidget(side)
+        split.addWidget(self.content)
+        split.setStretchFactor(1, 1)
+        split.setSizes([220, 890])
         self.splitter = split
         body = QWidget(objectName="main")
         bl = QVBoxLayout(body)
@@ -581,13 +499,52 @@ class MainWindow(QMainWindow):
         self._restore_layout()
         self.reload()
         self.sections.setCurrentRow(0)
+        self._setup_problems = 0
         self._ticker = QTimer(self, interval=1000, timeout=self._tick)
         self._ticker.start()
+        QTimer.singleShot(300, self.settings_page.refresh)  # flags setup problems in the sidebar
+
+    # --- pages and preferences ---
+    def show_settings(self) -> None:
+        self.settings_button.setChecked(True)
+        self.sections.blockSignals(True)
+        self.sections.setCurrentRow(-1)
+        self.sections.blockSignals(False)
+        self.content.setCurrentWidget(self.settings_scroll)
+        self.settings_page.refresh()
+
+    def show_passwords(self) -> None:
+        self.settings_button.setChecked(False)
+        if self.sections.currentRow() < 0:
+            self.sections.blockSignals(True)
+            self.sections.setCurrentRow(0)
+            self.sections.blockSignals(False)
+        self.content.setCurrentIndex(0)
+        self.refresh_list()
+
+    def set_theme_mode(self, mode: str) -> None:
+        self.theme_mode = mode
+        self.prefs.setValue("theme", mode)
+        self._retheme()
+
+    def set_clipboard_seconds(self, seconds: int) -> None:
+        self.clipboard_seconds = int(seconds)
+        self.prefs.setValue("clipboard_seconds", self.clipboard_seconds)
+        self.cred_view.set_clear_seconds(self.clipboard_seconds)
+
+    def set_anisette_url(self, url: str) -> None:
+        self.anisette_url = url
+        self.prefs.setValue("anisette_url", url)
+
+    def set_setup_state(self, problems: int) -> None:
+        self._setup_problems = problems
+        self._update_status()
 
     def _retheme(self, *_):
-        self.t = theme.apply(QApplication.instance())
-        self.sections.viewport().update()
-        self.entries.viewport().update()
+        self.t = theme.apply(QApplication.instance(), self.theme_mode)
+        for w in (self.sections, self.entries):
+            w.viewport().update()
+        self.update()
         self._show_current()
 
     # --- data ---
@@ -692,9 +649,12 @@ class MainWindow(QMainWindow):
         if self._sync is not None:
             return
         text, problem = model.sync_status()
+        if getattr(self, "_setup_problems", 0) and not problem:
+            n = self._setup_problems
+            text, problem = f"Setup: {n} problem{'s' if n > 1 else ''} - see Settings", True
         self.status.setText(text)
         self.status.setProperty("problem", problem)
-        _repolish(self.status)
+        repolish(self.status)
 
     # --- sync ---
     def start_sync(self) -> None:
@@ -703,6 +663,10 @@ class MainWindow(QMainWindow):
         proc = QProcess(self)
         proc.setProgram(sys.executable)
         proc.setArguments(["-m", "icp", "sync"])
+        if self.anisette_url:
+            env = QProcessEnvironment.systemEnvironment()
+            env.insert("ICP_ANISETTE_URL", self.anisette_url)
+            proc.setProcessEnvironment(env)
         proc.finished.connect(self._sync_finished)
         proc.errorOccurred.connect(lambda _: self._sync_finished(-1, None))
         self._sync = proc
@@ -738,10 +702,11 @@ class MainWindow(QMainWindow):
         if secret:
             data.setData("x-kde-passwordManagerHint", b"secret")
         QGuiApplication.clipboard().setMimeData(data)
-        if secret:
+        secs = self.clipboard_seconds
+        if secret and secs:
             self._clip_text = text
-            QTimer.singleShot(CLIPBOARD_CLEAR_SECONDS * 1000, lambda t=text: self._clear_clip(t))
-            self.toast.show_message(f"{what} copied · clears in {CLIPBOARD_CLEAR_SECONDS} s")
+            QTimer.singleShot(secs * 1000, lambda t=text: self._clear_clip(t))
+            self.toast.show_message(f"{what} copied · clears in {secs} s")
         else:
             self.toast.show_message(f"{what} copied")
 
@@ -793,13 +758,17 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(s.value("geometry"))
         else:
             self.resize(1120, 700)
-        if s.value("splitter"):
-            self.splitter.restoreState(s.value("splitter"))
+        if s.value("sidebar_split"):
+            self.splitter.restoreState(s.value("sidebar_split"))
+        if s.value("list_split"):
+            self.inner_splitter.restoreState(s.value("list_split"))
 
     def closeEvent(self, event) -> None:
         s = QSettings("icp", APP_ID)
         s.setValue("geometry", self.saveGeometry())
-        s.setValue("splitter", self.splitter.saveState())
+        s.setValue("sidebar_split", self.splitter.saveState())
+        s.setValue("list_split", self.inner_splitter.saveState())
+        self.settings_page.stop()
         if self._clip_text is not None:  # don't leave a copied password behind
             self._clear_clip(self._clip_text)
         super().closeEvent(event)
@@ -813,9 +782,11 @@ def main(argv=None) -> int:
     app = QApplication(sys.argv if argv is None else argv)
     app.setApplicationName("iCloud Passwords")
     app.setDesktopFileName(APP_ID)  # lets Wayland compositors match the .desktop entry/icon
-    theme.apply(app)
     window = MainWindow()
-    window.show()
+    if "--minimized" in app.arguments():  # from the login autostart entry
+        window.showMinimized()
+    else:
+        window.show()
     return app.exec()
 
 

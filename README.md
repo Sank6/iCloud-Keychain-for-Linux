@@ -86,8 +86,10 @@ Install it (Qt via PySide6) and add it to your application menu:
 desktop/install.sh
 ```
 
-Run `desktop/install.sh` with `ICP_ANISETTE_URL` set, so **Sync now** works when the app is
-started from the menu. Copied passwords and codes are hidden from KDE's clipboard history and
+**Settings** has a setup checklist (anisette server, sign-in, sync, keyring, browser
+helper, menu entry) with one-click fixes or a command to copy, plus the theme (automatic,
+light or dark), how long copied passwords stay on the clipboard, the anisette server address,
+and switches to start the anisette service and the app at login. Copied passwords and codes are hidden from KDE's clipboard history and
 cleared after 30 seconds. Keyboard: **Ctrl+F** search, **Ctrl+C** copy password (from the
 list), **Ctrl+B** copy username, **Ctrl+T** copy code, **Ctrl+R** sync. Signing in stays in the
 terminal (`icp login`).

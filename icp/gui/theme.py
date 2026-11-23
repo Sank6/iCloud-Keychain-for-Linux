@@ -31,7 +31,12 @@ AVATAR_COLORS = ("#ff9500", "#ff3b30", "#af52de", "#5856d6", "#007aff", "#32ade6
                  "#00c7be", "#ff2d55", "#a2845e", "#8e8e93", "#30b0c7")
 
 
-def is_dark() -> bool:
+MODES = ("auto", "light", "dark")
+
+
+def is_dark(mode: str = "auto") -> bool:
+    if mode in ("light", "dark"):
+        return mode == "dark"
     try:
         scheme = QGuiApplication.styleHints().colorScheme()
         if scheme == Qt.ColorScheme.Dark:
@@ -43,8 +48,8 @@ def is_dark() -> bool:
     return QGuiApplication.palette().color(QPalette.Window).lightness() < 128
 
 
-def tokens() -> dict:
-    return DARK if is_dark() else LIGHT
+def tokens(mode: str = "auto") -> dict:
+    return DARK if is_dark(mode) else LIGHT
 
 
 _QSS = string.Template("""
@@ -95,6 +100,34 @@ QLabel#empty { color: $dim; font-size: 11pt; }
 QLabel#hint { color: $dim; font-size: 9pt; }
 QPlainTextEdit#notes { background: transparent; border: none; font-size: 11pt; }
 
+QLabel#sectionTitle { font-size: 10pt; font-weight: 700; color: $dim; padding: 0 4px; }
+QLabel#pageTitle { font-size: 20pt; font-weight: 700; }
+QLabel#checkIcon { font-size: 13pt; font-weight: 800; min-width: 22px; }
+QLabel#checkIcon[state="ok"] { color: $good; }
+QLabel#checkIcon[state="warn"] { color: $warn; }
+QLabel#checkIcon[state="fail"] { color: #ff453a; }
+QLabel#checkTitle { font-size: 11pt; font-weight: 600; }
+QLabel#checkDetail { color: $dim; font-size: 9pt; }
+QLabel#command {
+    font-family: monospace; font-size: 9pt; background: $field; border-radius: 6px;
+    padding: 4px 8px;
+}
+QLabel#summary { font-size: 11pt; font-weight: 600; }
+QLabel#summary[state="ok"] { color: $good; }
+QLabel#summary[state="warn"] { color: $warn; }
+QLabel#summary[state="fail"] { color: #ff453a; }
+QPushButton#seg { background: transparent; border: none; border-radius: 7px; padding: 5px 14px; }
+QPushButton#seg:checked { background: $base; font-weight: 600; }
+QFrame#segBox { background: $field; border-radius: 9px; }
+QLineEdit#field {
+    background: $field; border: 1px solid transparent; border-radius: 8px; padding: 5px 9px;
+}
+QLineEdit#field:focus { border: 2px solid $accent; padding: 4px 8px; }
+QComboBox {
+    background: $field; border: none; border-radius: 8px; padding: 5px 10px; min-width: 110px;
+}
+QComboBox QAbstractItemView { background: $base; border: 1px solid $border; selection-background-color: $accent; }
+
 QLabel#toast {
     background: $toast; color: $toast_text; border-radius: 10px; padding: 8px 16px;
     font-weight: 600;
@@ -109,9 +142,9 @@ QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::su
 """)
 
 
-def apply(app: QApplication) -> dict:
-    """Style the whole app for the current light/dark setting; returns the tokens used."""
-    t = tokens()
+def apply(app: QApplication, mode: str = "auto") -> dict:
+    """Style the whole app for `mode` (auto follows the system); returns the tokens used."""
+    t = tokens(mode)
     app.setStyle("Fusion")
     pal = QPalette()
     for role, key in ((QPalette.Window, "window"), (QPalette.Base, "base"),
