@@ -18,6 +18,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import threading
 import zipfile
 from pathlib import Path
 
@@ -103,7 +104,13 @@ class Install:
     def data_dir(self) -> Path:
         """Firefox family: the profiles root. Chromium family: the config (user data) dir."""
         if self.spec.family == FIREFOX:
-            return self.root / self.spec.data
+            legacy = self.root / self.spec.data
+            if self.spec.data.startswith(".mozilla/"):
+                # Firefox 147+ keeps new profiles under $XDG_CONFIG_HOME/mozilla.
+                xdg = self.root / ".config" / "mozilla" / self.spec.data.split("/", 1)[1]
+                if xdg.is_dir() or not legacy.is_dir():
+                    return xdg if xdg.is_dir() else legacy
+            return legacy
         if self.kind == FLATPAK:
             return self.root / "config" / self.spec.data
         if self.kind == SNAP:
@@ -113,10 +120,12 @@ class Install:
     def host_dirs(self) -> list[Path]:
         if self.spec.family == CHROMIUM:
             return [self.data_dir() / "NativeMessagingHosts"]
-        # Firefox reads ~/.mozilla/native-messaging-hosts; forks read their own dot-dir too.
-        own = self.root / self.spec.data.split("/")[0] / "native-messaging-hosts"
-        moz = self.root / ".mozilla" / "native-messaging-hosts"
-        return [own] if own == moz else [own, moz]
+        # Firefox reads ~/.mozilla/native-messaging-hosts, or ~/.config/mozilla/... once it has
+        # moved to XDG directories; forks read their own dot-dir. Write to all of them.
+        dirs = [self.root / self.spec.data.split("/")[0] / "native-messaging-hosts",
+                self.root / ".mozilla" / "native-messaging-hosts",
+                self.root / ".config" / "mozilla" / "native-messaging-hosts"]
+        return list(dict.fromkeys(dirs))
 
 
 # --- discovery ------------------------------------------------------------------------------
@@ -192,6 +201,7 @@ class Status:
     host: bool                  # native host manifest present and pointing at this extension
     sandbox_ok: bool            # Flatpak: may reach the host (talk-name granted); else True
     unsigned_ok: bool           # Firefox family: a profile allows unsigned add-ons
+    temporary: bool = False     # Firefox: loaded as a temporary add-on (gone after a restart)
 
 
 def _chromium_extension(inst: Install) -> tuple[str, str]:
@@ -212,15 +222,16 @@ def _chromium_extension(inst: Install) -> tuple[str, str]:
     return state, ext_id
 
 
-def _firefox_extension(inst: Install) -> str:
+def _firefox_extension(inst: Install) -> tuple[str, bool]:
+    """-> (state, loaded as a temporary add-on)."""
     state = "missing"
     for f in inst.data_dir().glob("*/extensions.json"):
         for addon in (_read_json(f) or {}).get("addons", []):
             if addon.get("id") == GECKO_ID:
                 if addon.get("active"):
-                    return "installed"
+                    return "installed", addon.get("location") == "app-temporary"
                 state = "disabled"
-    return state
+    return state, False
 
 
 def unsigned_allowed(inst: Install) -> bool:
@@ -253,15 +264,16 @@ def status(inst: Install) -> Status:
         ext_id = real_id or predicted_chromium_id()
         unsigned = True
     else:
-        ext, ext_id = _firefox_extension(inst), GECKO_ID
+        (ext, temporary), ext_id = _firefox_extension(inst), GECKO_ID
         unsigned = unsigned_allowed(inst)
-    manifest = _read_json(inst.host_dirs()[0] / f"{HOST_NAME}.json") or {}
-    allowed = manifest.get("allowed_origins" if inst.spec.family == CHROMIUM
-                           else "allowed_extensions") or []
     wanted = f"chrome-extension://{ext_id}/" if inst.spec.family == CHROMIUM else GECKO_ID
-    host = wanted in allowed and Path(manifest.get("path", "")).exists()
+    key = "allowed_origins" if inst.spec.family == CHROMIUM else "allowed_extensions"
+    host = all(
+        wanted in (m.get(key) or []) and Path(m.get("path", "")).exists()
+        for m in [_read_json(d / f"{HOST_NAME}.json") or {} for d in inst.host_dirs()])
     sandbox_ok = flatpak_talk_granted(inst.spec.flatpak) if inst.kind == FLATPAK else True
-    return Status(ext, ext_id, host, sandbox_ok, unsigned)
+    return Status(ext, ext_id, host, sandbox_ok, unsigned,
+                  temporary if inst.spec.family == FIREFOX else False)
 
 
 # --- actions --------------------------------------------------------------------------------
@@ -339,12 +351,24 @@ def extensions_page_argv(inst: Install, st: Status) -> list[str]:
         return [*inst.launch, "--new-window"]
     if st.unsigned_ok:
         return [*inst.launch, str(build_xpi())]
-    return [*inst.launch, "about:debugging#/runtime/this-firefox"]
+    return [*inst.launch, "--new-window"]
+
+
+def guided(inst: Install, st: Status) -> bool:
+    """Whether adding the extension needs the step-by-step window (pasting an internal page
+    address), rather than an install prompt the browser shows by itself."""
+    return inst.spec.family == CHROMIUM or not st.unsigned_ok
+
+
+FIREFOX_DEBUG_URL = "about:debugging#/runtime/this-firefox"
 
 
 def next_step(inst: Install, st: Status) -> str:
     """What the user still has to do in the browser, in one sentence or two."""
     if st.extension == "installed" and st.host and st.sandbox_ok:
+        if st.temporary:
+            return ("Ready until Firefox restarts - it removes temporary add-ons when it quits, "
+                    "so add it again after a restart.")
         return "Ready - click the extension's toolbar icon on a login page."
     if st.extension == "disabled":
         return f"The extension is turned off - enable it on {inst.spec.name}'s extensions page."
@@ -354,10 +378,9 @@ def next_step(inst: Install, st: Status) -> str:
                     f"turn on Developer mode, click Load unpacked and choose {EXTENSION_DIR}.")
         if st.unsigned_ok:
             return "Click Add in the install prompt, then scan again."
-        return ("Click Load Temporary Add-on and choose "
-                f"{EXTENSION_DIR / 'manifest.json'}. Firefox removes it when it restarts; "
-                "browsers that allow unsigned add-ons (xpinstall.signatures.required = false "
-                "in about:config) can keep it.")
+        return ("Click Add extension for step-by-step help. Firefox only keeps add-ons signed "
+                "by Mozilla, so this one is loaded as a temporary add-on and needs adding again "
+                "after Firefox restarts.")
     if not st.sandbox_ok:
         return ("Flatpak keeps the browser from starting icp. Allowing it lets the browser "
                 "run programs outside its sandbox.")
@@ -366,10 +389,13 @@ def next_step(inst: Install, st: Status) -> str:
 
 def launch(argv: list[str]) -> tuple[bool, str]:
     try:
-        subprocess.Popen(argv, start_new_session=True, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL)
+        p = subprocess.Popen(argv, start_new_session=True, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
     except OSError as e:
         return False, str(e)
+    # Reap it when it exits (browsers often hand off to a running instance and quit at once),
+    # so it doesn't linger as a zombie for as long as the app runs.
+    threading.Thread(target=p.wait, daemon=True).start()
     return True, ""
 
 

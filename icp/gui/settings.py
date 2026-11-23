@@ -3,7 +3,6 @@ setup checklist whose items can be fixed with a click or a copied command."""
 
 from __future__ import annotations
 
-import subprocess
 
 from PySide6.QtCore import QThread, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices, QGuiApplication
@@ -300,10 +299,10 @@ class SettingsPage(QWidget):
             if argv is None:
                 self._w.toast.show_message("No terminal found - copy the command instead", 4000)
                 return
-            try:
-                subprocess.Popen(argv, start_new_session=True)
-            except OSError as e:
-                self._w.toast.show_message(f"Couldn't open a terminal: {e}", 4000)
+            from .browsers import launch
+            ok, err = launch(argv)
+            if not ok:
+                self._w.toast.show_message(f"Couldn't open a terminal: {err}", 4000)
                 return
             self._w.toast.show_message("Finish signing in in the terminal, then check again",
                                        5000)

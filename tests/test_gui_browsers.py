@@ -67,10 +67,31 @@ class ScanTests(_FakeHome):
     def test_firefox_fork_writes_own_and_mozilla_dirs(self):
         inst = b.Install(ZEN, b.SYSTEM, ("zen",), self.home)
         self.assertEqual(inst.host_dirs(), [self.home / ".zen/native-messaging-hosts",
-                                            self.home / ".mozilla/native-messaging-hosts"])
+                                            self.home / ".mozilla/native-messaging-hosts",
+                                            self.home / ".config/mozilla/native-messaging-hosts"])
+
+    def test_firefox_xdg_profiles(self):
+        ff = b.Install(next(s for s in b.SPECS if s.key == "firefox"), b.SYSTEM, ("firefox",),
+                       self.home)
+        self.assertEqual(ff.data_dir(), self.home / ".mozilla/firefox")  # nothing yet: legacy
+        (self.home / ".config/mozilla/firefox").mkdir(parents=True)
+        self.assertEqual(ff.data_dir(), self.home / ".config/mozilla/firefox")
+        self.assertIn(self.home / ".config/mozilla/native-messaging-hosts", ff.host_dirs())
 
 
 class StatusTests(_FakeHome):
+    def test_firefox_temporary_addon(self):
+        ff = b.Install(next(s for s in b.SPECS if s.key == "firefox"), b.SYSTEM, ("firefox",),
+                       self.home)
+        self.write_json(self.home / ".config/mozilla/firefox/x.default-release/extensions.json",
+                        {"addons": [{"id": b.GECKO_ID, "active": True,
+                                     "location": "app-temporary"}]})
+        b.register_host(ff, "")
+        st = b.status(ff)
+        self.assertEqual((st.extension, st.temporary, st.host), ("installed", True, True))
+        self.assertTrue(b.guided(ff, st))
+        self.assertIn("restarts", b.next_step(ff, st))
+
     def test_firefox_extension_and_unsigned_pref(self):
         inst = b.Install(ZEN, b.SYSTEM, ("zen",), self.home)
         self.assertEqual(b.status(inst).extension, "missing")
@@ -131,7 +152,8 @@ class PageArgvTests(_FakeHome):
         # chrome:// URLs from the command line are refused, so only the browser is opened.
         self.assertEqual(b.extensions_page_argv(chrome, st), ["google-chrome", "--new-window"])
         self.assertEqual(b.extensions_url(edge), "edge://extensions")
-        self.assertEqual(b.extensions_page_argv(zen, st)[-1], "about:debugging#/runtime/this-firefox")
+        self.assertEqual(b.extensions_page_argv(zen, st), ["zen", "--new-window"])
+        self.assertTrue(b.guided(zen, st))  # signed-only: pasted about:debugging steps
         xpi = b.extensions_page_argv(zen, b.Status("missing", "", False, True, True))[-1]
         self.assertTrue(xpi.endswith(".xpi") and Path(xpi).exists())
 

@@ -22,9 +22,10 @@ def _chip(text: str, state: str) -> QLabel:
 
 
 class _AddExtensionDialog(QDialog):
-    """Step-by-step help for loading the unpacked extension into a Chromium-family browser,
-    which can't be automated: those browsers refuse chrome:// pages opened by other programs.
-    Watches the profile and ticks itself off once the extension shows up."""
+    """Step-by-step help for loading the extension where it can't be automated: Chromium-family
+    browsers refuse chrome:// pages opened by other programs, and Firefox release builds only
+    take an unsigned add-on as a temporary one from about:debugging. Watches the profile and
+    ticks itself off once the extension shows up."""
 
     def __init__(self, inst: browsers.Install, page: "ExtensionPage"):
         super().__init__(page)
@@ -35,21 +36,34 @@ class _AddExtensionDialog(QDialog):
         col.setContentsMargins(24, 22, 24, 18)
         col.setSpacing(14)
         col.addWidget(QLabel(f"Add the extension to {inst.label}", objectName="pageTitle"))
-        col.addWidget(QLabel(f"{inst.spec.name} doesn't let other apps open its extensions page, "
-                             "so this takes four quick steps. This window notices when "
-                             "you're done.", objectName="checkDetail", wordWrap=True))
-        url = browsers.extensions_url(inst)
-        folder = str(browsers.EXTENSION_DIR)
+        firefox = inst.spec.family != CHROMIUM
+        intro = (f"{inst.spec.name} doesn't let other apps open its extensions page, so this "
+                 "takes a few quick steps. This window notices when you're done.")
+        if firefox:
+            intro += (f" {inst.spec.name} only keeps add-ons signed by Mozilla, so this one is "
+                      "loaded as a temporary add-on: it stays until you quit "
+                      f"{inst.spec.name}, and you add it again the same way after a restart.")
+        col.addWidget(QLabel(intro, objectName="checkDetail", wordWrap=True))
+        url = browsers.FIREFOX_DEBUG_URL if firefox else browsers.extensions_url(inst)
+        pick = str(browsers.EXTENSION_DIR / "manifest.json") if firefox \
+            else str(browsers.EXTENSION_DIR)
         card = Card()
         steps = [
             (f"Open {inst.spec.name}", "", "Open", lambda: self._launch()),
             ("Paste this into the address bar", url, "Copy",
              lambda: page.copy(url, "Address")),
-            ("Turn on Developer mode", "The switch is in the top-right corner of the page.",
-             "", None),
-            ("Click Load unpacked and choose this folder", folder, "Copy",
-             lambda: page.copy(folder, "Folder path")),
         ]
+        if firefox:
+            steps.append(("Click Load Temporary Add-on… and choose this file", pick, "Copy",
+                          lambda: page.copy(pick, "File path")))
+        else:
+            steps += [
+                ("Turn on Developer mode", "The switch is in the top-right corner of the page.",
+                 "", None),
+                ("Click Load unpacked and choose this folder", pick, "Copy",
+                 lambda: page.copy(pick, "Folder path")),
+            ]
+        folder = pick
         self._nums = []
         for i, (title, detail, button, slot) in enumerate(steps, 1):
             row = QFrame(objectName="row")
@@ -68,7 +82,7 @@ class _AddExtensionDialog(QDialog):
                            wordWrap=True, textFormat=Qt.PlainText,
                            textInteractionFlags=Qt.TextSelectableByMouse)
                 text.addWidget(d)
-            if i == 4:
+            if i == len(steps):
                 text.addWidget(QLabel("In the file picker, press Ctrl+L and paste the path.",
                                       objectName="checkDetail"))
             lay.addLayout(text, 1)
@@ -111,7 +125,8 @@ class _AddExtensionDialog(QDialog):
         for n in self._nums:
             n.setProperty("done", True)
             repolish(n)
-        self.state.setText("✓ Added and connected - reload any open login pages")
+        self.state.setText("✓ Added and connected - reload any open login pages" +
+                           (" (until the browser restarts)" if st.temporary else ""))
         self.state.setProperty("state", "ok")
         repolish(self.state)
         self.close_button.setText("Done")
@@ -147,7 +162,8 @@ class _BrowserRow(QFrame):
         col.addWidget(QLabel(where, objectName="checkDetail", textFormat=Qt.PlainText))
         chips = QHBoxLayout()
         chips.setSpacing(6)
-        chips.addWidget({"installed": _chip("✓ Extension added", "ok"),
+        chips.addWidget({"installed": _chip("✓ Extension added" +
+                                            (" (until restart)" if st.temporary else ""), "ok"),
                          "disabled": _chip("! Extension turned off", "warn"),
                          "missing": _chip("✕ Extension not added", "fail")}[st.extension])
         chips.addWidget(_chip("✓ Connected to icp", "ok") if st.host
@@ -169,8 +185,7 @@ class _BrowserRow(QFrame):
         buttons = QVBoxLayout()
         buttons.setSpacing(6)
         if inst.launch and st.extension != "installed":
-            label = ("Add extension…" if inst.spec.family == CHROMIUM else
-                     "Install add-on" if st.unsigned_ok else "Open add-ons page")
+            label = "Add extension…" if browsers.guided(inst, st) else "Install add-on"
             b = pill(label, "Add the extension in this browser")
             b.clicked.connect(lambda: page.open_page(self))
             buttons.addWidget(b)
@@ -299,7 +314,7 @@ class ExtensionPage(QWidget):
             if inst.kind == FLATPAK and not st.sandbox_ok:
                 notes.append(f"{inst.label}: also needs sandbox access (Allow…)")
             if st.extension != "installed" and inst.launch:
-                if inst.spec.family == CHROMIUM:
+                if browsers.guided(inst, st):
                     guides.append(inst)
                 elif self._open(r):
                     opened += 1
@@ -322,21 +337,17 @@ class ExtensionPage(QWidget):
         if not ok:
             self._w.toast.show_message(f"Couldn't open {inst.label}: {err}", 5000)
             return False
-        # Have the path ready for the file picker that comes next.
-        if inst.spec.family != CHROMIUM and not st.unsigned_ok:
-            QGuiApplication.clipboard().setText(str(browsers.EXTENSION_DIR / "manifest.json"))
         return True
 
     def open_page(self, row: _BrowserRow) -> None:
-        if row.inst.spec.family == CHROMIUM:
-            browsers.register_host(row.inst, self._w.anisette_url, row.st.ext_id)
+        browsers.register_host(row.inst, self._w.anisette_url,
+                               row.st.ext_id if row.inst.spec.family == CHROMIUM else "")
+        if browsers.guided(row.inst, row.st):
             _AddExtensionDialog(row.inst, self).exec()
             self.scan()
             return
         if self._open(row):
-            hint = ("click Add in the prompt" if row.st.unsigned_ok else
-                    "manifest path copied - paste it in the file dialog")
-            self._w.toast.show_message(f"Opened {row.inst.label} · {hint}", 5000)
+            self._w.toast.show_message(f"Opened {row.inst.label} · click Add in the prompt", 5000)
         QTimer.singleShot(8000, self.scan)
 
     def allow_flatpak(self, inst: browsers.Install) -> None:
