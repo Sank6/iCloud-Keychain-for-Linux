@@ -74,7 +74,8 @@ icp show github
 ## Desktop app
 
 `icp-gui` is a desktop window over the same vault: search, copy, live verification codes, Wi-Fi
-networks, shared groups and Hide My Email addresses, with a **Sync now** button.
+networks, shared groups and Hide My Email addresses, with a **Sync now** button. Click a field
+to copy it. The app follows the system light or dark setting.
 
 ![iCloud Passwords desktop app](docs/gui.png)
 
