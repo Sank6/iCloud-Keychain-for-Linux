@@ -378,9 +378,8 @@ def next_step(inst: Install, st: Status) -> str:
                     f"turn on Developer mode, click Load unpacked and choose {EXTENSION_DIR}.")
         if st.unsigned_ok:
             return "Click Add in the install prompt, then scan again."
-        return ("Click Add extension for step-by-step help. Firefox only keeps add-ons signed "
-                "by Mozilla, so this one is loaded as a temporary add-on and needs adding again "
-                "after Firefox restarts.")
+        return (f"Click Add extension: {inst.spec.name} only keeps add-ons signed by Mozilla, "
+                "so you can add it temporarily (until it restarts) or permanently.")
     if not st.sandbox_ok:
         return ("Flatpak keeps the browser from starting icp. Allowing it lets the browser "
                 "run programs outside its sandbox.")
@@ -411,3 +410,123 @@ def any_connected(installs=None) -> tuple[int, int]:
 
 def manual_command(ext_id: str = "") -> str:
     return f"{shlex.quote(str(REPO / 'host' / 'install.sh'))} {ext_id or '<EXTENSION_ID>'}"
+
+
+# --- keeping the add-on in Firefox-family browsers -----------------------------------------
+#
+# Release Firefox only keeps add-ons signed by Mozilla, and is built so that turning off
+# xpinstall.signatures.required does nothing (MOZ_REQUIRE_SIGNING). Forks and Developer/Nightly
+# builds honour that preference. Distribution builds (Arch, Debian, ...) also accept unsigned
+# add-ons from the system-wide extensions folder (MOZ_UNSIGNED_SYSTEM_SCOPE), where distro
+# packages put add-ons; installing there needs admin rights.
+
+FIREFOX_APP_ID = "{ec8030f7-c20a-464f-9b0e-13a3a9e97384}"
+SYSTEM_EXTENSIONS = Path("/usr/lib/mozilla/extensions") / FIREFOX_APP_ID
+
+
+def install_dir(inst: Install) -> Path | None:
+    """The browser's program folder (where omni.ja lives), following wrapper scripts."""
+    if not inst.launch or inst.kind != SYSTEM:
+        return None
+    exe = Path(os.path.realpath(inst.launch[0]))
+    candidates = [exe.parent]
+    try:
+        head = exe.read_bytes()[:4096]
+        if head.startswith(b"#!"):  # e.g. /usr/bin/firefox: exec /usr/lib/firefox/firefox "$@"
+            for word in head.decode(errors="replace").split():
+                word = word.strip('"\'')
+                if word.startswith("/") and not word.startswith(("/bin/", "/usr/bin/env")):
+                    candidates.append(Path(os.path.realpath(word)).parent)
+    except OSError:
+        pass
+    return next((d for d in candidates if (d / "omni.ja").exists()), None)
+
+
+def build_flags(inst: Install) -> dict:
+    """MOZ_* build constants that decide how unsigned add-ons are treated; {} if unknown."""
+    d = install_dir(inst)
+    if d is None or not shutil.which("unzip"):
+        return {}
+    try:  # omni.ja is an "optimized" jar that Python's zipfile can't read; unzip copes
+        p = subprocess.run(["unzip", "-p", str(d / "omni.ja"), "modules/AppConstants.sys.mjs"],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    flags = {}
+    for name in ("MOZ_REQUIRE_SIGNING", "MOZ_UNSIGNED_SYSTEM_SCOPE", "MOZ_UNSIGNED_APP_SCOPE"):
+        for line in p.stdout.splitlines():
+            if line.strip().startswith(f"{name}:"):
+                flags[name] = "true" in line
+                break
+    return flags
+
+
+@dataclasses.dataclass
+class KeepOption:
+    kind: str        # "pref" (turn off the signature check) | "system" (system folder) | ""
+    title: str
+    warning: str
+    command: str = ""
+
+
+def keep_option(inst: Install) -> KeepOption:
+    """How the add-on can stay installed in this Firefox-family browser, if at all."""
+    flags = build_flags(inst)
+    enforced = flags.get("MOZ_REQUIRE_SIGNING", inst.spec.key == "firefox")
+    if not enforced:
+        return KeepOption(
+            "pref", "Turn off the add-on signature check",
+            f"{inst.spec.name} will then install add-ons that Mozilla hasn't reviewed - not just "
+            "this one. Only install add-on files you trust while it's off. It's set in each "
+            f"profile's user.js and takes effect after {inst.spec.name} restarts.")
+    if inst.spec.key == "firefox" and flags.get("MOZ_UNSIGNED_SYSTEM_SCOPE"):
+        dest = SYSTEM_EXTENSIONS / f"{GECKO_ID}.xpi"
+        return KeepOption(
+            "system", "Install for all users (system add-on folder)",
+            "This Firefox can't turn off its signature check (Mozilla builds it in), but it "
+            "loads unsigned add-ons from the system-wide folder where Linux packages put "
+            "add-ons. That skips Mozilla's review for this add-on, applies to every user on "
+            "this computer, and needs your admin password. After restarting Firefox, enable it "
+            "once when Firefox asks (or in about:addons). Re-run this after updating icp.",
+            f"sudo install -Dm644 {shlex.quote(str(build_xpi()))} {shlex.quote(str(dest))}")
+    return KeepOption("", "", f"{inst.spec.name} only keeps add-ons signed by Mozilla, so the "
+                              "extension can only be added as a temporary add-on.")
+
+
+def turn_off_signing(inst: Install) -> int:
+    """Add xpinstall.signatures.required = false to each profile's user.js; -> profiles."""
+    line = 'user_pref("xpinstall.signatures.required", false);'
+    done = 0
+    for prefs in inst.data_dir().glob("*/prefs.js"):
+        user = prefs.parent / "user.js"
+        try:
+            text = user.read_text() if user.exists() else ""
+            if line not in text:
+                with user.open("a") as f:
+                    f.write(("\n" if text and not text.endswith("\n") else "") +
+                            "// Added by icp-gui: allow the unsigned iCloud Passwords add-on\n"
+                            f"{line}\n")
+            done += 1
+        except OSError:
+            continue
+    return done
+
+
+def system_install(inst: Install) -> tuple[bool, str]:
+    """Copy the packaged add-on into the system extensions folder via pkexec (admin prompt)."""
+    if not shutil.which("pkexec"):
+        return False, "pkexec isn't available - copy the command and run it in a terminal"
+    xpi = build_xpi()
+    dest = SYSTEM_EXTENSIONS / f"{GECKO_ID}.xpi"
+    try:
+        p = subprocess.run(["pkexec", "install", "-Dm644", str(xpi), str(dest)],
+                           capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, str(e)
+    if p.returncode != 0:
+        return False, (p.stderr or p.stdout).strip() or "cancelled"
+    return True, str(dest)
+
+
+def system_installed() -> bool:
+    return (SYSTEM_EXTENSIONS / f"{GECKO_ID}.xpi").exists()

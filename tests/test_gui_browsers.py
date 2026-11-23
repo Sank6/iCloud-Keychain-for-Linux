@@ -142,6 +142,38 @@ class StatusTests(_FakeHome):
         self.assertIn("Flatpak", b.next_step(inst, loaded))
 
 
+class KeepOptionTests(_FakeHome):
+    def ff(self, key="firefox"):
+        return b.Install(next(s for s in b.SPECS if s.key == key), b.SYSTEM, ("x",), self.home)
+
+    def test_release_firefox_gets_system_folder(self):
+        with mock.patch.object(b, "build_flags", return_value={
+                "MOZ_REQUIRE_SIGNING": True, "MOZ_UNSIGNED_SYSTEM_SCOPE": True}):
+            opt = b.keep_option(self.ff())
+        self.assertEqual(opt.kind, "system")
+        self.assertIn("sudo install -Dm644", opt.command)
+        self.assertIn(str(b.SYSTEM_EXTENSIONS / "icp-linux@local.xpi"), opt.command)
+
+    def test_release_without_unsigned_scope_is_temporary_only(self):
+        with mock.patch.object(b, "build_flags", return_value={"MOZ_REQUIRE_SIGNING": True}):
+            self.assertEqual(b.keep_option(self.ff()).kind, "")
+
+    def test_fork_gets_pref_and_it_is_written_once(self):
+        with mock.patch.object(b, "build_flags", return_value={"MOZ_REQUIRE_SIGNING": False}):
+            opt = b.keep_option(self.ff("zen"))
+        self.assertEqual(opt.kind, "pref")
+        self.assertIn("not just", opt.warning)
+        prof = self.home / ".zen/abc.default"
+        prof.mkdir(parents=True)
+        (prof / "prefs.js").write_text("")
+        inst = self.ff("zen")
+        self.assertEqual(b.turn_off_signing(inst), 1)
+        b.turn_off_signing(inst)
+        text = (prof / "user.js").read_text()
+        self.assertEqual(text.count('user_pref("xpinstall.signatures.required", false);'), 1)
+        self.assertTrue(b.unsigned_allowed(inst))
+
+
 class PageArgvTests(_FakeHome):
     def test_open_targets(self):
         chrome = b.Install(CHROME, b.SYSTEM, ("google-chrome",), self.home)

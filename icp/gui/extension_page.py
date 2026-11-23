@@ -37,13 +37,19 @@ class _AddExtensionDialog(QDialog):
         col.setSpacing(14)
         col.addWidget(QLabel(f"Add the extension to {inst.label}", objectName="pageTitle"))
         firefox = inst.spec.family != CHROMIUM
-        intro = (f"{inst.spec.name} doesn't let other apps open its extensions page, so this "
-                 "takes a few quick steps. This window notices when you're done.")
         if firefox:
-            intro += (f" {inst.spec.name} only keeps add-ons signed by Mozilla, so this one is "
-                      "loaded as a temporary add-on: it stays until you quit "
-                      f"{inst.spec.name}, and you add it again the same way after a restart.")
+            intro = (f"{inst.spec.name} only keeps add-ons signed by Mozilla, and this one isn't. "
+                     "Choose how to add it - this window notices when you're done.")
+        else:
+            intro = (f"{inst.spec.name} doesn't let other apps open its extensions page, so this "
+                     "takes a few quick steps. This window notices when you're done.")
         col.addWidget(QLabel(intro, objectName="checkDetail", wordWrap=True))
+        if firefox:
+            self._add_keep_option(col)
+            col.addWidget(QLabel("TEMPORARY ADD-ON - NO CHANGES TO "
+                                 f"{inst.spec.name.upper()}", objectName="sectionTitle"))
+            col.addWidget(QLabel(f"Removed when {inst.spec.name} quits; add it again the same way "
+                                 "after a restart.", objectName="checkDetail", wordWrap=True))
         url = browsers.FIREFOX_DEBUG_URL if firefox else browsers.extensions_url(inst)
         pick = str(browsers.EXTENSION_DIR / "manifest.json") if firefox \
             else str(browsers.EXTENSION_DIR)
@@ -108,6 +114,75 @@ class _AddExtensionDialog(QDialog):
         self._poll.start()
         page.copy(url, "Address")  # step 2 is ready to paste as soon as the browser is up
 
+    def _add_keep_option(self, col) -> None:
+        """The permanent alternative, with its trade-off spelled out."""
+        opt = browsers.keep_option(self.inst)
+        self._opt = opt
+        col.addWidget(QLabel("PERMANENT", objectName="sectionTitle"))
+        card = Card()
+        row = QFrame(objectName="row")
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(14, 12, 12, 12)
+        lay.setSpacing(12)
+        mark = QLabel("!", objectName="checkIcon", alignment=Qt.AlignTop)
+        mark.setProperty("state", "warn" if opt.kind else "fail")
+        lay.addWidget(mark)
+        text = QVBoxLayout()
+        text.setSpacing(4)
+        if opt.kind:
+            text.addWidget(QLabel(opt.title, objectName="checkTitle"))
+        text.addWidget(QLabel(opt.warning, objectName="checkDetail", wordWrap=True))
+        if opt.command:
+            text.addWidget(QLabel(opt.command, objectName="command", wordWrap=True,
+                                  textFormat=Qt.PlainText,
+                                  textInteractionFlags=Qt.TextSelectableByMouse))
+        lay.addLayout(text, 1)
+        if opt.kind:
+            buttons = QVBoxLayout()
+            self.keep_button = pill("Install permanently…" if opt.kind == "system"
+                                    else "Turn off and install…", "", accent=True)
+            self.keep_button.clicked.connect(self._keep)
+            buttons.addWidget(self.keep_button)
+            if opt.command:
+                b = pill("Copy command", "Run it yourself in a terminal instead")
+                b.clicked.connect(lambda: self._page.copy(opt.command, "Command"))
+                buttons.addWidget(b)
+            buttons.addStretch(1)
+            lay.addLayout(buttons)
+        card.add(row)
+        card.show_rows({})
+        col.addWidget(card)
+
+    def _keep(self) -> None:
+        opt, name = self._opt, self.inst.spec.name
+        if opt.kind == "pref" and self.keep_button.text() == "Open add-on file":
+            browsers.launch([*self.inst.launch, str(browsers.build_xpi())])
+            self.state.setText(f"Click Add in {name}'s prompt")
+            return
+        answer = QMessageBox.warning(
+            self, opt.title, opt.warning + "\n\nContinue?",
+            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
+        if answer != QMessageBox.Yes:
+            return
+        if opt.kind == "pref":
+            n = browsers.turn_off_signing(self.inst)
+            if not n:
+                self.state.setText(f"No {name} profile found to change")
+                return
+            self.state.setText(f"Signature check off in {n} profile{'s' if n > 1 else ''}. Quit "
+                               f"{name} completely, reopen it, then click Open add-on file.")
+            self.keep_button.setText("Open add-on file")
+        else:
+            ok, msg = browsers.system_install(self.inst)
+            if not ok:
+                self.state.setText(f"Not installed: {msg}")
+                return
+            self.state.setText(f"Installed. Quit {name} completely and reopen it, then click "
+                               "Enable when it asks about the new add-on.")
+            self.keep_button.setEnabled(False)
+        self.state.setProperty("state", "warn")
+        repolish(self.state)
+
     def _launch(self) -> None:
         ok, err = browsers.launch(browsers.extensions_page_argv(self.inst, browsers.status(self.inst)))
         if not ok:
@@ -117,7 +192,9 @@ class _AddExtensionDialog(QDialog):
         st = browsers.status(self.inst)
         if st.extension != "installed":
             if st.extension == "disabled":
-                self.state.setText("The extension is added but turned off - switch it on")
+                self.state.setText("The extension is added but turned off - enable it in "
+                                   "about:addons" if self.inst.spec.family != CHROMIUM else
+                                   "The extension is added but turned off - switch it on")
             return
         if not st.host:  # loaded from elsewhere, so the real ID differs from the predicted one
             browsers.register_host(self.inst, self._page._w.anisette_url, st.ext_id)
@@ -127,6 +204,8 @@ class _AddExtensionDialog(QDialog):
             repolish(n)
         self.state.setText("✓ Added and connected - reload any open login pages" +
                            (" (until the browser restarts)" if st.temporary else ""))
+        if getattr(self, "keep_button", None) is not None and not st.temporary:
+            self.keep_button.setEnabled(False)
         self.state.setProperty("state", "ok")
         repolish(self.state)
         self.close_button.setText("Done")
