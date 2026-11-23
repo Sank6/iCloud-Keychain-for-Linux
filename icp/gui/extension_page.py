@@ -85,9 +85,9 @@ class _AddExtensionDialog(QDialog):
         self.state = QLabel("Waiting for the extension…", objectName="summary")
         self.state.setProperty("state", "warn")
         bottom.addWidget(self.state, 1)
-        self.done = pill("Close", "")
-        self.done.clicked.connect(self.accept)
-        bottom.addWidget(self.done)
+        self.close_button = pill("Close", "")
+        self.close_button.clicked.connect(self.accept)
+        bottom.addWidget(self.close_button)
         col.addLayout(bottom)
 
         self._poll = QTimer(self, interval=2000, timeout=self._check)
@@ -114,9 +114,9 @@ class _AddExtensionDialog(QDialog):
         self.state.setText("✓ Added and connected - reload any open login pages")
         self.state.setProperty("state", "ok")
         repolish(self.state)
-        self.done.setText("Done")
-        self.done.setObjectName("pillAccent")
-        repolish(self.done)
+        self.close_button.setText("Done")
+        self.close_button.setObjectName("pillAccent")
+        repolish(self.close_button)
 
 
 class _BrowserRow(QFrame):
